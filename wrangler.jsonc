@@ -1,0 +1,27 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "transit-directory",
+	"main": "./dist/_worker.js/index.js",
+	"compatibility_date": "2025-10-12",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"build": {
+		"command": "yarn build",
+		"cwd": ".",
+		"watch_dir": "./src"
+	},
+	"assets": {
+		"binding": "ASSETS",
+		"directory": "./dist"
+	},
+	"observability": {
+		"enabled": true
+	},
+	"kv_namespaces": [
+		{
+			"binding": "SESSION",
+			"id": "96d1374577344c278ecf8978ca4a0ab4"
+		}
+	]
+}
