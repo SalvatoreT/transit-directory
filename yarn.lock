@@ -1463,7 +1463,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/node@npm:*":
+"@types/node@npm:*, @types/node@npm:^24.7.2":
   version: 24.7.2
   resolution: "@types/node@npm:24.7.2"
   dependencies:
@@ -4575,6 +4575,7 @@ __metadata:
   dependencies:
     "@astrojs/cloudflare": "npm:^12.6.10"
     "@astrojs/ts-plugin": "npm:^1.10.4"
+    "@types/node": "npm:^24.7.2"
     astro: "npm:^5.14.4"
     wrangler: "npm:^4.42.2"
   languageName: unknown
