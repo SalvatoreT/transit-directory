@@ -6,16 +6,18 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "test": "vitest run"
   },
   "dependencies": {
     "@astrojs/cloudflare": "^12.6.10",
     "@astrojs/ts-plugin": "^1.10.4",
-    "astro": "^5.14.4"
+    "astro": "5.15.6"
   },
-  "packageManager": "yarn@4.10.3",
+  "packageManager": "yarn@4.11.0",
   "devDependencies": {
     "@types/node": "^24.7.2",
+    "vitest": "^3.2.4",
     "wrangler": "^4.42.2"
   }
 }
