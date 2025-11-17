@@ -7,6 +7,11 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "triggers": {
+    "crons": [
+      "0 * * * *"
+    ]
+  },
   "build": {
     "command": "yarn build",
     "cwd": ".",

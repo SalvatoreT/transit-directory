@@ -8,6 +8,11 @@
     "dist"
   ],
   "compilerOptions": {
+    "types": [
+      "./worker-configuration.d.ts",
+      "node",
+      "vitest"
+    ],
     "plugins": [
       {
         "name": "@astrojs/ts-plugin"

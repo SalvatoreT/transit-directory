@@ -13,5 +13,8 @@ export default defineConfig({
       // Vitest never spins up the Astro dev server, so the proxy would linger and hang the process.
       enabled: !isVitest,
     },
+    workerEntryPoint: {
+      path: 'src/worker.ts',
+    },
   })
 });
