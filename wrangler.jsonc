@@ -4,13 +4,9 @@
   "main": "./dist/_worker.js/index.js",
   "compatibility_date": "2025-10-12",
   "preview_urls": true,
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
+  "compatibility_flags": ["nodejs_compat"],
   "triggers": {
-    "crons": [
-      "0 * * * *"
-    ]
+    "crons": ["0 * * * *"]
   },
   "build": {
     "command": "yarn build",

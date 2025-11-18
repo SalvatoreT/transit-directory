@@ -1,7 +1,7 @@
 // @ts-check
-import {defineConfig} from 'astro/config';
+import { defineConfig } from "astro/config";
 
-import cloudflare from '@astrojs/cloudflare';
+import cloudflare from "@astrojs/cloudflare";
 
 const isVitest = Boolean(process.env.VITEST);
 
@@ -14,7 +14,7 @@ export default defineConfig({
       enabled: !isVitest,
     },
     workerEntryPoint: {
-      path: 'src/worker.ts',
+      path: "src/worker.ts",
     },
-  })
+  }),
 });
