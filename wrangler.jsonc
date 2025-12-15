@@ -25,5 +25,12 @@
       "binding": "SESSION",
       "id": "96d1374577344c278ecf8978ca4a0ab4"
     }
+  ],
+  "workflows": [
+    {
+      "name": "import-511-workflow",
+      "binding": "IMPORT_511_WORKFLOW",
+      "class_name": "Import511Workflow"
+    }
   ]
 }
