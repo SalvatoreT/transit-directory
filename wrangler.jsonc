@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "transit-directory",
   "main": "./dist/_worker.js/index.js",
-  "compatibility_date": "2025-10-12",
+  "compatibility_date": "2025-12-20",
   "preview_urls": true,
   "compatibility_flags": ["nodejs_compat"],
   "triggers": {

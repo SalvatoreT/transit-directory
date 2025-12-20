@@ -13,15 +13,15 @@
     "@astrojs/check": "0.9.6",
     "@astrojs/cloudflare": "12.6.12",
     "@astrojs/ts-plugin": "1.10.6",
-    "astro": "5.16.5",
+    "astro": "5.16.6",
     "typescript": "^5.9.3"
   },
   "packageManager": "yarn@4.12.0",
   "devDependencies": {
-    "@types/node": "^25.0.2",
+    "@types/node": "^25.0.3",
     "prettier": "^3.7.4",
     "prettier-plugin-astro": "0.14.1",
-    "vitest": "^4.0.15",
-    "wrangler": "^4.54.0"
+    "vitest": "^4.0.16",
+    "wrangler": "^4.56.0"
   }
 }
