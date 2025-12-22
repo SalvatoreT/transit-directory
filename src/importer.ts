@@ -112,29 +112,6 @@ function floatOrNull(value: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export async function resetDatabase(db: D1Database) {
-  // Clear all rows in dependency order so re-imports start clean.
-  await db.prepare("DELETE FROM vehicle_positions").run();
-  await db.prepare("DELETE FROM trip_updates").run();
-  await db.prepare("DELETE FROM service_alerts").run();
-  await db.prepare("DELETE FROM stop_times").run();
-  await db.prepare("DELETE FROM frequencies").run();
-  await db.prepare("DELETE FROM transfers").run();
-  await db.prepare("DELETE FROM fare_rules").run();
-  await db.prepare("DELETE FROM fare_attributes").run();
-  await db.prepare("DELETE FROM shapes").run();
-  await db.prepare("DELETE FROM trips").run();
-  await db.prepare("DELETE FROM calendar_dates").run();
-  await db.prepare("DELETE FROM calendar").run();
-  await db.prepare("DELETE FROM routes").run();
-  await db.prepare("DELETE FROM stops").run();
-  await db.prepare("DELETE FROM agency").run();
-  await db.prepare("DELETE FROM feed_info").run();
-  await db.prepare("DELETE FROM feed_version").run();
-  await db.prepare("DELETE FROM feed_source").run();
-  await db.prepare("DELETE FROM sqlite_sequence").run();
-}
-
 async function ensureFeedSource(
   db: D1Database,
   sourceName: string,
@@ -218,65 +195,6 @@ async function createFeedVersion(
   return id;
 }
 
-async function clearFeedVersionData(db: D1Database, feedVersionId: number) {
-  await db
-    .prepare(
-      "DELETE FROM stop_times WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-    )
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare(
-      "DELETE FROM frequencies WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-    )
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM transfers WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM fare_rules WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM fare_attributes WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM shapes WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM trips WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM calendar_dates WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM calendar WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM routes WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM stops WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM agency WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-  await db
-    .prepare("DELETE FROM feed_info WHERE feed_version_id = ?")
-    .bind(feedVersionId)
-    .run();
-}
-
 async function getFileContent(
   files: GtfsFileProvider,
   key: FileKey,
@@ -325,8 +243,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
     nullIfEmpty(feedInfo?.feed_end_date),
   );
 
-  await clearFeedVersionData(db, feedVersionId);
-
   if (feedInfo) {
     await db
       .prepare(
@@ -353,194 +269,325 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
 
   // Agencies
   const agencyMap = new Map<string | null, number>();
+  const agencyStmts: D1PreparedStatement[] = [];
   for (const row of agencyRows) {
-    const res = await db
-      .prepare(
-        `
+    agencyStmts.push(
+      db
+        .prepare(
+          `
         INSERT OR REPLACE INTO agency (
           feed_version_id, agency_id, agency_name, agency_url, agency_timezone,
           agency_lang, agency_phone, agency_fare_url, agency_email
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      )
-      .bind(
-        feedVersionId,
-        nullIfEmpty(row.agency_id),
-        nullIfEmpty(row.agency_name),
-        nullIfEmpty(row.agency_url),
-        nullIfEmpty(row.agency_timezone),
-        nullIfEmpty(row.agency_lang),
-        nullIfEmpty(row.agency_phone),
-        nullIfEmpty(row.agency_fare_url),
-        nullIfEmpty(row.agency_email),
-      )
-      .run();
-    const pk = res.meta.last_row_id;
-    agencyMap.set(nullIfEmpty(row.agency_id), pk ?? 0);
+        )
+        .bind(
+          feedVersionId,
+          nullIfEmpty(row.agency_id),
+          nullIfEmpty(row.agency_name),
+          nullIfEmpty(row.agency_url),
+          nullIfEmpty(row.agency_timezone),
+          nullIfEmpty(row.agency_lang),
+          nullIfEmpty(row.agency_phone),
+          nullIfEmpty(row.agency_fare_url),
+          nullIfEmpty(row.agency_email),
+        ),
+    );
+  }
+  if (agencyStmts.length) {
+    const results = await db.batch(agencyStmts);
+    agencyRows.forEach((row, i) => {
+      const pk = results[i].meta.last_row_id;
+      agencyMap.set(nullIfEmpty(row.agency_id), pk ?? 0);
+    });
   }
 
   // Routes
   const routeMap = new Map<string, number>();
+  const routeRows: CsvRow[] = [];
+  const routeStmts: D1PreparedStatement[] = [];
   for await (const row of getFileRows("routes")) {
-    const res = await db
-      .prepare(
-        `
+    routeRows.push(row);
+    routeStmts.push(
+      db
+        .prepare(
+          `
         INSERT OR REPLACE INTO routes (
           feed_version_id, route_id, agency_pk, route_short_name, route_long_name,
           route_desc, route_type, route_url, route_color, route_text_color,
           route_sort_order, continuous_pickup, continuous_drop_off, network_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      )
-      .bind(
-        feedVersionId,
-        row.route_id,
-        agencyMap.get(nullIfEmpty(row.agency_id) ?? null) ?? null,
-        nullIfEmpty(row.route_short_name),
-        nullIfEmpty(row.route_long_name),
-        nullIfEmpty(row.route_desc),
-        intOrNull(row.route_type),
-        nullIfEmpty(row.route_url),
-        nullIfEmpty(row.route_color),
-        nullIfEmpty(row.route_text_color),
-        intOrNull(row.route_sort_order),
-        intOrNull(row.continuous_pickup),
-        intOrNull(row.continuous_drop_off),
-        nullIfEmpty(row.network_id),
-      )
-      .run();
-    const pk = res.meta.last_row_id;
-    if (pk) routeMap.set(row.route_id, pk);
+        )
+        .bind(
+          feedVersionId,
+          row.route_id,
+          agencyMap.get(nullIfEmpty(row.agency_id) ?? null) ?? null,
+          nullIfEmpty(row.route_short_name),
+          nullIfEmpty(row.route_long_name),
+          nullIfEmpty(row.route_desc),
+          intOrNull(row.route_type),
+          nullIfEmpty(row.route_url),
+          nullIfEmpty(row.route_color),
+          nullIfEmpty(row.route_text_color),
+          intOrNull(row.route_sort_order),
+          intOrNull(row.continuous_pickup),
+          intOrNull(row.continuous_drop_off),
+          nullIfEmpty(row.network_id),
+        ),
+    );
+    if (routeStmts.length >= 100) {
+      const results = await db.batch(routeStmts);
+      const offset = routeRows.length - routeStmts.length;
+      routeStmts.forEach((_, i) => {
+        const pk = results[i].meta.last_row_id;
+        if (pk) routeMap.set(routeRows[offset + i].route_id, pk);
+      });
+      routeStmts.length = 0;
+    }
+  }
+  if (routeStmts.length) {
+    const results = await db.batch(routeStmts);
+    const offset = routeRows.length - routeStmts.length;
+    routeStmts.forEach((_, i) => {
+      const pk = results[i].meta.last_row_id;
+      if (pk) routeMap.set(routeRows[offset + i].route_id, pk);
+    });
   }
 
   // Stops
   const stopMap = new Map<string, number>();
+  const stopRows: CsvRow[] = [];
+  const stopStmts: D1PreparedStatement[] = [];
   const parentAssignments: Array<{ childPk: number; parentId: string }> = [];
 
   for await (const row of getFileRows("stops")) {
-    const res = await db
-      .prepare(
-        `
+    stopRows.push(row);
+    stopStmts.push(
+      db
+        .prepare(
+          `
         INSERT INTO stops (
           feed_version_id, stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon,
           zone_id, stop_url, location_type, parent_station, stop_timezone,
           wheelchair_boarding, level_id, platform_code
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(feed_version_id, stop_id) DO UPDATE SET
+          stop_code = excluded.stop_code,
+          stop_name = excluded.stop_name,
+          stop_desc = excluded.stop_desc,
+          stop_lat = excluded.stop_lat,
+          stop_lon = excluded.stop_lon,
+          zone_id = excluded.zone_id,
+          stop_url = excluded.stop_url,
+          location_type = excluded.location_type,
+          stop_timezone = excluded.stop_timezone,
+          wheelchair_boarding = excluded.wheelchair_boarding,
+          level_id = excluded.level_id,
+          platform_code = excluded.platform_code
       `,
-      )
-      .bind(
-        feedVersionId,
-        row.stop_id,
-        nullIfEmpty(row.stop_code),
-        nullIfEmpty(row.stop_name),
-        nullIfEmpty(row.stop_desc),
-        floatOrNull(row.stop_lat),
-        floatOrNull(row.stop_lon),
-        nullIfEmpty(row.zone_id),
-        nullIfEmpty(row.stop_url),
-        intOrNull(row.location_type),
-        null,
-        nullIfEmpty(row.stop_timezone),
-        intOrNull(row.wheelchair_boarding),
-        nullIfEmpty(row.level_id),
-        nullIfEmpty(row.platform_code),
-      )
-      .run();
-    const pk = res.meta.last_row_id;
-    if (pk) {
-      stopMap.set(row.stop_id, pk);
-      if (row.parent_station) {
-        parentAssignments.push({ childPk: pk, parentId: row.parent_station });
-      }
+        )
+        .bind(
+          feedVersionId,
+          row.stop_id,
+          nullIfEmpty(row.stop_code),
+          nullIfEmpty(row.stop_name),
+          nullIfEmpty(row.stop_desc),
+          floatOrNull(row.stop_lat),
+          floatOrNull(row.stop_lon),
+          nullIfEmpty(row.zone_id),
+          nullIfEmpty(row.stop_url),
+          intOrNull(row.location_type),
+          null,
+          nullIfEmpty(row.stop_timezone),
+          intOrNull(row.wheelchair_boarding),
+          nullIfEmpty(row.level_id),
+          nullIfEmpty(row.platform_code),
+        ),
+    );
+    if (stopStmts.length >= 100) {
+      const results = await db.batch(stopStmts);
+      const offset = stopRows.length - stopStmts.length;
+      stopStmts.forEach((_, i) => {
+        const pk = results[i].meta.last_row_id;
+        const r = stopRows[offset + i];
+        if (pk) {
+          stopMap.set(r.stop_id, pk);
+          if (r.parent_station) {
+            parentAssignments.push({ childPk: pk, parentId: r.parent_station });
+          }
+        }
+      });
+      stopStmts.length = 0;
     }
   }
+  if (stopStmts.length) {
+    const results = await db.batch(stopStmts);
+    const offset = stopRows.length - stopStmts.length;
+    stopStmts.forEach((_, i) => {
+      const pk = results[i].meta.last_row_id;
+      const r = stopRows[offset + i];
+      if (pk) {
+        stopMap.set(r.stop_id, pk);
+        if (r.parent_station) {
+          parentAssignments.push({ childPk: pk, parentId: r.parent_station });
+        }
+      }
+    });
+  }
 
+  const parentStmts: D1PreparedStatement[] = [];
   for (const item of parentAssignments) {
     const parentPk = stopMap.get(item.parentId);
     if (parentPk) {
-      await db
-        .prepare("UPDATE stops SET parent_station = ? WHERE stop_pk = ?")
-        .bind(parentPk, item.childPk)
-        .run();
+      parentStmts.push(
+        db
+          .prepare("UPDATE stops SET parent_station = ? WHERE stop_pk = ?")
+          .bind(parentPk, item.childPk),
+      );
     }
+    if (parentStmts.length >= 100) {
+      await db.batch(parentStmts);
+      parentStmts.length = 0;
+    }
+  }
+  if (parentStmts.length) {
+    await db.batch(parentStmts);
   }
 
   // Calendar
+  const calStmts: D1PreparedStatement[] = [];
   for await (const row of getFileRows("calendar")) {
-    await db
-      .prepare(
-        `
+    calStmts.push(
+      db
+        .prepare(
+          `
         INSERT INTO calendar (
           feed_version_id, service_id, monday, tuesday, wednesday, thursday,
           friday, saturday, sunday, start_date, end_date
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(feed_version_id, service_id) DO UPDATE SET
+          monday = excluded.monday,
+          tuesday = excluded.tuesday,
+          wednesday = excluded.wednesday,
+          thursday = excluded.thursday,
+          friday = excluded.friday,
+          saturday = excluded.saturday,
+          sunday = excluded.sunday,
+          start_date = excluded.start_date,
+          end_date = excluded.end_date
       `,
-      )
-      .bind(
-        feedVersionId,
-        row.service_id,
-        intOrNull(row.monday),
-        intOrNull(row.tuesday),
-        intOrNull(row.wednesday),
-        intOrNull(row.thursday),
-        intOrNull(row.friday),
-        intOrNull(row.saturday),
-        intOrNull(row.sunday),
-        nullIfEmpty(row.start_date),
-        nullIfEmpty(row.end_date),
-      )
-      .run();
+        )
+        .bind(
+          feedVersionId,
+          row.service_id,
+          intOrNull(row.monday),
+          intOrNull(row.tuesday),
+          intOrNull(row.wednesday),
+          intOrNull(row.thursday),
+          intOrNull(row.friday),
+          intOrNull(row.saturday),
+          intOrNull(row.sunday),
+          nullIfEmpty(row.start_date),
+          nullIfEmpty(row.end_date),
+        ),
+    );
+    if (calStmts.length >= 100) {
+      await db.batch(calStmts);
+      calStmts.length = 0;
+    }
+  }
+  if (calStmts.length) {
+    await db.batch(calStmts);
   }
 
   // Calendar dates
+  const calDateStmts: D1PreparedStatement[] = [];
   for await (const row of getFileRows("calendar_dates")) {
-    await db
-      .prepare(
-        `
+    calDateStmts.push(
+      db
+        .prepare(
+          `
         INSERT INTO calendar_dates (
           feed_version_id, service_id, date, exception_type
         ) VALUES (?, ?, ?, ?)
       `,
-      )
-      .bind(
-        feedVersionId,
-        row.service_id,
-        nullIfEmpty(row.date),
-        intOrNull(row.exception_type),
-      )
-      .run();
+        )
+        .bind(
+          feedVersionId,
+          row.service_id,
+          nullIfEmpty(row.date),
+          intOrNull(row.exception_type),
+        ),
+    );
+    if (calDateStmts.length >= 100) {
+      await db.batch(calDateStmts);
+      calDateStmts.length = 0;
+    }
+  }
+  if (calDateStmts.length) {
+    await db.batch(calDateStmts);
   }
 
   // Trips
   const tripMap = new Map<string, number>();
+  const tripRows: CsvRow[] = [];
+  const tripStmts: D1PreparedStatement[] = [];
   for await (const row of getFileRows("trips")) {
     const routePk = routeMap.get(row.route_id);
     if (!routePk) continue;
-    const res = await db
-      .prepare(
-        `
+    tripRows.push(row);
+    tripStmts.push(
+      db
+        .prepare(
+          `
         INSERT INTO trips (
           feed_version_id, trip_id, route_pk, service_id, trip_headsign, trip_short_name,
           direction_id, block_id, shape_id, wheelchair_accessible, bikes_allowed
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(feed_version_id, trip_id) DO UPDATE SET
+          route_pk = excluded.route_pk,
+          service_id = excluded.service_id,
+          trip_headsign = excluded.trip_headsign,
+          trip_short_name = excluded.trip_short_name,
+          direction_id = excluded.direction_id,
+          block_id = excluded.block_id,
+          shape_id = excluded.shape_id,
+          wheelchair_accessible = excluded.wheelchair_accessible,
+          bikes_allowed = excluded.bikes_allowed
       `,
-      )
-      .bind(
-        feedVersionId,
-        row.trip_id,
-        routePk,
-        row.service_id,
-        nullIfEmpty(row.trip_headsign),
-        nullIfEmpty(row.trip_short_name),
-        intOrNull(row.direction_id),
-        nullIfEmpty(row.block_id),
-        nullIfEmpty(row.shape_id),
-        intOrNull(row.wheelchair_accessible),
-        intOrNull(row.bikes_allowed),
-      )
-      .run();
-    const pk = res.meta.last_row_id;
-    if (pk) tripMap.set(row.trip_id, pk);
+        )
+        .bind(
+          feedVersionId,
+          row.trip_id,
+          routePk,
+          row.service_id,
+          nullIfEmpty(row.trip_headsign),
+          nullIfEmpty(row.trip_short_name),
+          intOrNull(row.direction_id),
+          nullIfEmpty(row.block_id),
+          nullIfEmpty(row.shape_id),
+          intOrNull(row.wheelchair_accessible),
+          intOrNull(row.bikes_allowed),
+        ),
+    );
+    if (tripStmts.length >= 100) {
+      const results = await db.batch(tripStmts);
+      const offset = tripRows.length - tripStmts.length;
+      tripStmts.forEach((_, i) => {
+        const pk = results[i].meta.last_row_id;
+        if (pk) tripMap.set(tripRows[offset + i].trip_id, pk);
+      });
+      tripStmts.length = 0;
+    }
+  }
+  if (tripStmts.length) {
+    const results = await db.batch(tripStmts);
+    const offset = tripRows.length - tripStmts.length;
+    tripStmts.forEach((_, i) => {
+      const pk = results[i].meta.last_row_id;
+      if (pk) tripMap.set(tripRows[offset + i].trip_id, pk);
+    });
   }
 
   // Stop times
@@ -549,28 +596,38 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
     const tripPk = tripMap.get(row.trip_id);
     const stopPk = stopMap.get(row.stop_id);
     if (!tripPk || !stopPk) continue;
-    const stmt = db
-      .prepare(
-        `
+    stopTimeStatements.push(
+      db
+        .prepare(
+          `
         INSERT INTO stop_times (
           trip_pk, stop_pk, stop_sequence, arrival_time, departure_time,
           stop_headsign, pickup_type, drop_off_type, shape_dist_traveled, timepoint
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(trip_pk, stop_sequence) DO UPDATE SET
+          stop_pk = excluded.stop_pk,
+          arrival_time = excluded.arrival_time,
+          departure_time = excluded.departure_time,
+          stop_headsign = excluded.stop_headsign,
+          pickup_type = excluded.pickup_type,
+          drop_off_type = excluded.drop_off_type,
+          shape_dist_traveled = excluded.shape_dist_traveled,
+          timepoint = excluded.timepoint
       `,
-      )
-      .bind(
-        tripPk,
-        stopPk,
-        intOrNull(row.stop_sequence),
-        nullIfEmpty(row.arrival_time),
-        nullIfEmpty(row.departure_time),
-        nullIfEmpty(row.stop_headsign),
-        intOrNull(row.pickup_type),
-        intOrNull(row.drop_off_type),
-        floatOrNull(row.shape_dist_traveled),
-        intOrNull(row.timepoint),
-      );
-    stopTimeStatements.push(stmt);
+        )
+        .bind(
+          tripPk,
+          stopPk,
+          intOrNull(row.stop_sequence),
+          nullIfEmpty(row.arrival_time),
+          nullIfEmpty(row.departure_time),
+          nullIfEmpty(row.stop_headsign),
+          intOrNull(row.pickup_type),
+          intOrNull(row.drop_off_type),
+          floatOrNull(row.shape_dist_traveled),
+          intOrNull(row.timepoint),
+        ),
+    );
     if (stopTimeStatements.length >= 100) {
       await db.batch(stopTimeStatements);
       stopTimeStatements.length = 0;
@@ -583,23 +640,28 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
   // Shapes
   const shapeStatements: D1PreparedStatement[] = [];
   for await (const row of getFileRows("shapes")) {
-    const stmt = db
-      .prepare(
-        `
+    shapeStatements.push(
+      db
+        .prepare(
+          `
         INSERT INTO shapes (
           feed_version_id, shape_id, shape_pt_lat, shape_pt_lon, shape_pt_sequence, shape_dist_traveled
         ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(feed_version_id, shape_id, shape_pt_sequence) DO UPDATE SET
+          shape_pt_lat = excluded.shape_pt_lat,
+          shape_pt_lon = excluded.shape_pt_lon,
+          shape_dist_traveled = excluded.shape_dist_traveled
       `,
-      )
-      .bind(
-        feedVersionId,
-        row.shape_id,
-        floatOrNull(row.shape_pt_lat),
-        floatOrNull(row.shape_pt_lon),
-        intOrNull(row.shape_pt_sequence),
-        floatOrNull(row.shape_dist_traveled),
-      );
-    shapeStatements.push(stmt);
+        )
+        .bind(
+          feedVersionId,
+          row.shape_id,
+          floatOrNull(row.shape_pt_lat),
+          floatOrNull(row.shape_pt_lon),
+          intOrNull(row.shape_pt_sequence),
+          floatOrNull(row.shape_dist_traveled),
+        ),
+    );
     if (shapeStatements.length >= 100) {
       await db.batch(shapeStatements);
       shapeStatements.length = 0;
@@ -610,71 +672,105 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
   }
 
   // Fare attributes
+  const fareAttrStmts: D1PreparedStatement[] = [];
   for await (const row of getFileRows("fare_attributes")) {
-    await db
-      .prepare(
-        `
+    fareAttrStmts.push(
+      db
+        .prepare(
+          `
         INSERT INTO fare_attributes (
           feed_version_id, fare_id, price, currency_type, payment_method,
           transfers, agency_pk, transfer_duration
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(feed_version_id, fare_id) DO UPDATE SET
+          price = excluded.price,
+          currency_type = excluded.currency_type,
+          payment_method = excluded.payment_method,
+          transfers = excluded.transfers,
+          agency_pk = excluded.agency_pk,
+          transfer_duration = excluded.transfer_duration
       `,
-      )
-      .bind(
-        feedVersionId,
-        row.fare_id,
-        floatOrNull(row.price),
-        nullIfEmpty(row.currency_type),
-        intOrNull(row.payment_method),
-        intOrNull(row.transfers),
-        agencyMap.get(nullIfEmpty(row.agency_id) ?? null) ?? null,
-        intOrNull(row.transfer_duration),
-      )
-      .run();
+        )
+        .bind(
+          feedVersionId,
+          row.fare_id,
+          floatOrNull(row.price),
+          nullIfEmpty(row.currency_type),
+          intOrNull(row.payment_method),
+          intOrNull(row.transfers),
+          agencyMap.get(nullIfEmpty(row.agency_id) ?? null) ?? null,
+          intOrNull(row.transfer_duration),
+        ),
+    );
+    if (fareAttrStmts.length >= 100) {
+      await db.batch(fareAttrStmts);
+      fareAttrStmts.length = 0;
+    }
+  }
+  if (fareAttrStmts.length) {
+    await db.batch(fareAttrStmts);
   }
 
   // Fare rules
+  const fareRuleStmts: D1PreparedStatement[] = [];
   for await (const row of getFileRows("fare_rules")) {
-    await db
-      .prepare(
-        `
+    fareRuleStmts.push(
+      db
+        .prepare(
+          `
         INSERT INTO fare_rules (
           feed_version_id, fare_id, route_id, origin_id, destination_id, contains_id
         ) VALUES (?, ?, ?, ?, ?, ?)
       `,
-      )
-      .bind(
-        feedVersionId,
-        row.fare_id,
-        nullIfEmpty(row.route_id),
-        nullIfEmpty(row.origin_id),
-        nullIfEmpty(row.destination_id),
-        nullIfEmpty(row.contains_id),
-      )
-      .run();
+        )
+        .bind(
+          feedVersionId,
+          row.fare_id,
+          nullIfEmpty(row.route_id),
+          nullIfEmpty(row.origin_id),
+          nullIfEmpty(row.destination_id),
+          nullIfEmpty(row.contains_id),
+        ),
+    );
+    if (fareRuleStmts.length >= 100) {
+      await db.batch(fareRuleStmts);
+      fareRuleStmts.length = 0;
+    }
+  }
+  if (fareRuleStmts.length) {
+    await db.batch(fareRuleStmts);
   }
 
   // Transfers
+  const transferStmts: D1PreparedStatement[] = [];
   for await (const row of getFileRows("transfers")) {
     const fromStopPk = stopMap.get(row.from_stop_id);
     const toStopPk = stopMap.get(row.to_stop_id);
     if (!fromStopPk || !toStopPk) continue;
-    await db
-      .prepare(
-        `
+    transferStmts.push(
+      db
+        .prepare(
+          `
         INSERT INTO transfers (
           feed_version_id, from_stop_pk, to_stop_pk, transfer_type, min_transfer_time
         ) VALUES (?, ?, ?, ?, ?)
       `,
-      )
-      .bind(
-        feedVersionId,
-        fromStopPk,
-        toStopPk,
-        intOrNull(row.transfer_type),
-        intOrNull(row.min_transfer_time),
-      )
-      .run();
+        )
+        .bind(
+          feedVersionId,
+          fromStopPk,
+          toStopPk,
+          intOrNull(row.transfer_type),
+          intOrNull(row.min_transfer_time),
+        ),
+    );
+    if (transferStmts.length >= 100) {
+      await db.batch(transferStmts);
+      transferStmts.length = 0;
+    }
+  }
+  if (transferStmts.length) {
+    await db.batch(transferStmts);
   }
 
   // Frequencies (optional)
@@ -709,18 +805,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
   }
 }
 
-export interface ImportFeedOptions {
-  clear?: boolean;
-}
-
-export async function importGtfsFeed(
-  env: Env,
-  feed: GtfsFeedInput,
-  options?: ImportFeedOptions,
-) {
-  const clear = options?.clear ?? true;
-  if (clear) {
-    await resetDatabase(env.gtfs_data);
-  }
+export async function importGtfsFeed(env: Env, feed: GtfsFeedInput) {
   await importFeed(feed, env.gtfs_data);
 }

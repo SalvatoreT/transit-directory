@@ -20,7 +20,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
     const { id } = event.payload;
 
     const zipBuffer = await step.do(
-      `Fetch GTFS for agency: ${id}`,
+      `[Import511] Download ZIP for ${id}`,
       async () => {
         const response = await fetch(
           `https://api.511.org/transit/datafeeds?api_key=${this.env.API_KEY_511}&operator_id=${id}`,
@@ -39,7 +39,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       },
     );
 
-    await step.do("Import GTFS to D1", async () => {
+    await step.do(`[Import511] Import static files for ${id}`, async () => {
       // @ts-ignore - JSZip might not have perfect ESM types
       const { default: JSZip } = await import("jszip");
       const zip = await JSZip.loadAsync(zipBuffer);
@@ -62,15 +62,11 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
         return null;
       };
 
-      await importGtfsFeed(
-        this.env,
-        {
-          sourceName: id,
-          versionLabel: `511-${id}-${new Date().toISOString()}`,
-          files: fileProvider,
-        },
-        { clear: true },
-      );
+      await importGtfsFeed(this.env, {
+        sourceName: id,
+        versionLabel: `511-${id}-${new Date().toISOString()}`,
+        files: fileProvider,
+      });
     });
   }
 }
