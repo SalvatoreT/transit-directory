@@ -336,22 +336,12 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           nullIfEmpty(row.network_id),
         ),
     );
-    if (routeStmts.length >= 100) {
-      const results = await db.batch(routeStmts);
-      const offset = routeRows.length - routeStmts.length;
-      routeStmts.forEach((_, i) => {
-        const pk = results[i].meta.last_row_id;
-        if (pk) routeMap.set(routeRows[offset + i].route_id, pk);
-      });
-      routeStmts.length = 0;
-    }
   }
   if (routeStmts.length) {
     const results = await db.batch(routeStmts);
-    const offset = routeRows.length - routeStmts.length;
     routeStmts.forEach((_, i) => {
       const pk = results[i].meta.last_row_id;
-      if (pk) routeMap.set(routeRows[offset + i].route_id, pk);
+      if (pk) routeMap.set(routeRows[i].route_id, pk);
     });
   }
 
@@ -405,28 +395,12 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           nullIfEmpty(row.platform_code),
         ),
     );
-    if (stopStmts.length >= 100) {
-      const results = await db.batch(stopStmts);
-      const offset = stopRows.length - stopStmts.length;
-      stopStmts.forEach((_, i) => {
-        const pk = results[i].meta.last_row_id;
-        const r = stopRows[offset + i];
-        if (pk) {
-          stopMap.set(r.stop_id, pk);
-          if (r.parent_station) {
-            parentAssignments.push({ childPk: pk, parentId: r.parent_station });
-          }
-        }
-      });
-      stopStmts.length = 0;
-    }
   }
   if (stopStmts.length) {
     const results = await db.batch(stopStmts);
-    const offset = stopRows.length - stopStmts.length;
     stopStmts.forEach((_, i) => {
       const pk = results[i].meta.last_row_id;
-      const r = stopRows[offset + i];
+      const r = stopRows[i];
       if (pk) {
         stopMap.set(r.stop_id, pk);
         if (r.parent_station) {
@@ -445,10 +419,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           .prepare("UPDATE stops SET parent_station = ? WHERE stop_pk = ?")
           .bind(parentPk, item.childPk),
       );
-    }
-    if (parentStmts.length >= 100) {
-      await db.batch(parentStmts);
-      parentStmts.length = 0;
     }
   }
   if (parentStmts.length) {
@@ -492,10 +462,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           nullIfEmpty(row.end_date),
         ),
     );
-    if (calStmts.length >= 100) {
-      await db.batch(calStmts);
-      calStmts.length = 0;
-    }
   }
   if (calStmts.length) {
     await db.batch(calStmts);
@@ -520,10 +486,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           intOrNull(row.exception_type),
         ),
     );
-    if (calDateStmts.length >= 100) {
-      await db.batch(calDateStmts);
-      calDateStmts.length = 0;
-    }
   }
   if (calDateStmts.length) {
     await db.batch(calDateStmts);
@@ -571,22 +533,12 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           intOrNull(row.bikes_allowed),
         ),
     );
-    if (tripStmts.length >= 100) {
-      const results = await db.batch(tripStmts);
-      const offset = tripRows.length - tripStmts.length;
-      tripStmts.forEach((_, i) => {
-        const pk = results[i].meta.last_row_id;
-        if (pk) tripMap.set(tripRows[offset + i].trip_id, pk);
-      });
-      tripStmts.length = 0;
-    }
   }
   if (tripStmts.length) {
     const results = await db.batch(tripStmts);
-    const offset = tripRows.length - tripStmts.length;
     tripStmts.forEach((_, i) => {
       const pk = results[i].meta.last_row_id;
-      if (pk) tripMap.set(tripRows[offset + i].trip_id, pk);
+      if (pk) tripMap.set(tripRows[i].trip_id, pk);
     });
   }
 
@@ -628,10 +580,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           intOrNull(row.timepoint),
         ),
     );
-    if (stopTimeStatements.length >= 100) {
-      await db.batch(stopTimeStatements);
-      stopTimeStatements.length = 0;
-    }
   }
   if (stopTimeStatements.length) {
     await db.batch(stopTimeStatements);
@@ -662,10 +610,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           floatOrNull(row.shape_dist_traveled),
         ),
     );
-    if (shapeStatements.length >= 100) {
-      await db.batch(shapeStatements);
-      shapeStatements.length = 0;
-    }
   }
   if (shapeStatements.length) {
     await db.batch(shapeStatements);
@@ -702,10 +646,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           intOrNull(row.transfer_duration),
         ),
     );
-    if (fareAttrStmts.length >= 100) {
-      await db.batch(fareAttrStmts);
-      fareAttrStmts.length = 0;
-    }
   }
   if (fareAttrStmts.length) {
     await db.batch(fareAttrStmts);
@@ -732,10 +672,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           nullIfEmpty(row.contains_id),
         ),
     );
-    if (fareRuleStmts.length >= 100) {
-      await db.batch(fareRuleStmts);
-      fareRuleStmts.length = 0;
-    }
   }
   if (fareRuleStmts.length) {
     await db.batch(fareRuleStmts);
@@ -764,10 +700,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           intOrNull(row.min_transfer_time),
         ),
     );
-    if (transferStmts.length >= 100) {
-      await db.batch(transferStmts);
-      transferStmts.length = 0;
-    }
   }
   if (transferStmts.length) {
     await db.batch(transferStmts);
@@ -795,10 +727,6 @@ async function importFeed(feed: GtfsFeedInput, db: D1Database) {
           intOrNull(row.exact_times),
         ),
     );
-    if (freqStatements.length >= 100) {
-      await db.batch(freqStatements);
-      freqStatements.length = 0;
-    }
   }
   if (freqStatements.length) {
     await db.batch(freqStatements);
