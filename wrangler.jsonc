@@ -5,6 +5,9 @@
   "compatibility_date": "2025-12-20",
   "preview_urls": true,
   "compatibility_flags": ["nodejs_compat"],
+  "limits": {
+    "cpu_ms": 60000 // 60 seconds
+  },
   "triggers": {
     "crons": ["0 * * * *"]
   },
