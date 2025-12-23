@@ -196,7 +196,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       return parseCsv(content);
     };
 
-    const { feedVersionId, feedInfo, isNew } = await step.do(
+    const { feedVersionId, feedInfo } = await step.do(
       `[Import511] Initialize feed version for ${operatorId}`,
       async () => {
         const agencyRows = await getFileRows("agency");
@@ -250,13 +250,77 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           .bind(feedSourceId, versionLabel, feedStartDate, feedEndDate)
           .run();
 
-        const feedVersionId = res.results?.[0]?.feed_version_id as
+        let feedVersionId = res.results?.[0]?.feed_version_id as
           | number
           | undefined;
 
         if (!feedVersionId) {
-          // Version already exists! Skip rest of workflow.
-          return { feedVersionId: null, isNew: false, feedInfo };
+          // Version already exists! Get ID and delete existing data for a clean re-import
+          const existing = await this.env.gtfs_data
+            .prepare(
+              "SELECT feed_version_id FROM feed_version WHERE feed_source_id = ? AND version_label = ?",
+            )
+            .bind(feedSourceId, versionLabel)
+            .first<{ feed_version_id: number }>();
+
+          if (!existing)
+            throw new Error("Failed to find existing feed_version_id");
+          feedVersionId = existing.feed_version_id;
+
+          await this.env.gtfs_data.batch([
+            this.env.gtfs_data
+              .prepare(
+                "DELETE FROM stop_times WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare(
+                "DELETE FROM frequencies WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM attributions WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM trips WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM transfers WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM pathways WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM stops WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM fare_attributes WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM fare_rules WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM routes WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM agency WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM feed_info WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM calendar WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM calendar_dates WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM shapes WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM levels WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+          ]);
         }
 
         // De-activate other versions for this source
@@ -267,25 +331,9 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           .bind(feedSourceId, feedVersionId)
           .run();
 
-        return { feedVersionId, isNew: true, feedInfo };
+        return { feedVersionId, feedInfo };
       },
     );
-
-    if (!isNew) {
-      await step.do(
-        `[Import511] Cleanup R2 (Skipped) for ${operatorId}`,
-        async () => {
-          const listed = await this.env.gtfs_processing.list({
-            prefix: `${prefix}/`,
-          });
-          const keys = listed.objects.map((o) => o.key);
-          if (keys.length) {
-            await this.env.gtfs_processing.delete(keys);
-          }
-        },
-      );
-      return;
-    }
 
     if (feedInfo) {
       await step.do(
