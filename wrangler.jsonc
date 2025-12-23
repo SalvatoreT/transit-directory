@@ -39,5 +39,11 @@
       "binding": "IMPORT_511_WORKFLOW",
       "class_name": "Import511Workflow"
     }
+  ],
+  "r2_buckets": [
+    {
+      "bucket_name": "gtfs-processing",
+      "binding": "gtfs_processing"
+    }
   ]
 }

@@ -29,7 +29,19 @@ Inspect tables after loading:
 yarn wrangler d1 execute gtfs_data --local --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
 ```
 
-Trigger the Workflows-backed import (uses Cloudflare Workflows) for a specific agency (e.g., `BA` for BART or `CT` for Caltrain):
+## R2 GTFS processing
+
+The import process uses an R2 bucket for temporary storage of GTFS files.
+
+- Bucket name `gtfs-processing`, binding `gtfs_processing` in `wrangler.jsonc`.
+
+For local development, Wrangler will automatically use a local R2 bucket. For remote setup:
+
+```sh
+yarn wrangler r2 bucket create gtfs-processing
+```
+
+## Trigger the Workflows-backed import (uses Cloudflare Workflows) for a specific agency (e.g., `BA` for BART or `CT` for Caltrain):
 
 ```sh
 yarn wrangler dev
