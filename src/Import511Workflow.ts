@@ -803,72 +803,144 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       },
     );
 
-    await step.do(
-      `[Import511] Import stop_times for ${operatorId}`,
-      async () => {
-        const stream = await getFileStream("stop_times");
-        const stmt = this.env.gtfs_data.prepare(
-          `
-          INSERT INTO stop_times (
-            trip_pk, stop_pk, stop_sequence, arrival_time, departure_time,
-            stop_headsign, pickup_type, drop_off_type, shape_dist_traveled, timepoint
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(trip_pk, stop_sequence) DO UPDATE SET
-            stop_pk = excluded.stop_pk,
-            arrival_time = excluded.arrival_time,
-            departure_time = excluded.departure_time,
-            stop_headsign = excluded.stop_headsign,
-            pickup_type = excluded.pickup_type,
-            drop_off_type = excluded.drop_off_type,
-            shape_dist_traveled = excluded.shape_dist_traveled,
-            timepoint = excluded.timepoint
-        `,
+    const stopTimesKey = `${prefix}/${GTFS_FILE_NAMES.stop_times.toLowerCase()}`;
+    const stopTimesObj = await this.env.gtfs_processing.head(stopTimesKey);
+    const stopTimesSize = stopTimesObj?.size ?? 0;
+
+    if (stopTimesSize > 0) {
+      let offset = 0;
+      const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+      let chunkIndex = 0;
+      let headerLine = "";
+
+      while (offset < stopTimesSize) {
+        const result = await step.do(
+          `[Import511] Import stop_times chunk ${chunkIndex} for ${operatorId}`,
+          async () => {
+            const isFirstChunk = offset === 0;
+
+            // Fetch chunk
+            const length = Math.min(CHUNK_SIZE, stopTimesSize - offset);
+
+            // We need the header if it's not the first chunk
+            let currentHeader = headerLine;
+            if (!isFirstChunk && !currentHeader) {
+              const headObj = await this.env.gtfs_processing.get(stopTimesKey, {
+                range: { length: 4096 },
+              });
+              if (headObj) {
+                const headText = await headObj.text();
+                const firstLineEnd = headText.indexOf("\n");
+                if (firstLineEnd !== -1) {
+                  currentHeader = headText.substring(0, firstLineEnd).trim();
+                }
+              }
+            }
+
+            const chunkObj = await this.env.gtfs_processing.get(stopTimesKey, {
+              range: { offset, length },
+            });
+
+            if (!chunkObj) return { processed: length, header: currentHeader };
+
+            let text = await chunkObj.text();
+            let processedBytes = text.length;
+
+            // If not the very last chunk, we must cut at the last newline
+            if (offset + length < stopTimesSize) {
+              const lastNewline = text.lastIndexOf("\n");
+              if (lastNewline !== -1) {
+                text = text.substring(0, lastNewline);
+                processedBytes = lastNewline + 1; // +1 for the newline
+              }
+            }
+
+            // If first chunk, extract header
+            if (isFirstChunk) {
+              const firstNewline = text.indexOf("\n");
+              if (firstNewline !== -1) {
+                currentHeader = text.substring(0, firstNewline).trim();
+              }
+            }
+
+            // Prepare CSV
+            let csvContent = text;
+            if (!isFirstChunk && currentHeader) {
+              csvContent = currentHeader + "\n" + text;
+            }
+
+            const rows = parseCsv(csvContent);
+
+            const stmt = this.env.gtfs_data.prepare(
+              `
+              INSERT INTO stop_times (
+                trip_pk, stop_pk, stop_sequence, arrival_time, departure_time,
+                stop_headsign, pickup_type, drop_off_type, shape_dist_traveled, timepoint
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(trip_pk, stop_sequence) DO UPDATE SET
+                stop_pk = excluded.stop_pk,
+                arrival_time = excluded.arrival_time,
+                departure_time = excluded.departure_time,
+                stop_headsign = excluded.stop_headsign,
+                pickup_type = excluded.pickup_type,
+                drop_off_type = excluded.drop_off_type,
+                shape_dist_traveled = excluded.shape_dist_traveled,
+                timepoint = excluded.timepoint
+            `,
+            );
+
+            let stmts: D1PreparedStatement[] = [];
+            const BATCH_SIZE = 500;
+            const CONCURRENCY = 10;
+            const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
+
+            for (const row of rows) {
+              const tripPk = tripMap[row.trip_id];
+              const stopPk = stopMap[row.stop_id];
+              if (!tripPk || !stopPk) continue;
+              stmts.push(
+                stmt.bind(
+                  tripPk,
+                  stopPk,
+                  intOrNull(row.stop_sequence),
+                  nullIfEmpty(row.arrival_time),
+                  nullIfEmpty(row.departure_time),
+                  nullIfEmpty(row.stop_headsign),
+                  intOrNull(row.pickup_type),
+                  intOrNull(row.drop_off_type),
+                  floatOrNull(row.shape_dist_traveled),
+                  intOrNull(row.timepoint),
+                ),
+              );
+
+              if (stmts.length >= TOTAL_CHUNK) {
+                await batchExecute(
+                  this.env.gtfs_data,
+                  stmts,
+                  BATCH_SIZE,
+                  CONCURRENCY,
+                );
+                stmts = [];
+              }
+            }
+            if (stmts.length) {
+              await batchExecute(
+                this.env.gtfs_data,
+                stmts,
+                BATCH_SIZE,
+                CONCURRENCY,
+              );
+            }
+
+            return { processed: processedBytes, header: currentHeader };
+          },
         );
 
-        let stmts: D1PreparedStatement[] = [];
-        const BATCH_SIZE = 500;
-        const CONCURRENCY = 10;
-        const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
-
-        for await (const row of stream) {
-          const tripPk = tripMap[row.trip_id];
-          const stopPk = stopMap[row.stop_id];
-          if (!tripPk || !stopPk) continue;
-          stmts.push(
-            stmt.bind(
-              tripPk,
-              stopPk,
-              intOrNull(row.stop_sequence),
-              nullIfEmpty(row.arrival_time),
-              nullIfEmpty(row.departure_time),
-              nullIfEmpty(row.stop_headsign),
-              intOrNull(row.pickup_type),
-              intOrNull(row.drop_off_type),
-              floatOrNull(row.shape_dist_traveled),
-              intOrNull(row.timepoint),
-            ),
-          );
-
-          if (stmts.length >= TOTAL_CHUNK) {
-            await batchExecute(
-              this.env.gtfs_data,
-              stmts,
-              BATCH_SIZE,
-              CONCURRENCY,
-            );
-            stmts = [];
-          }
-        }
-        if (stmts.length) {
-          await batchExecute(
-            this.env.gtfs_data,
-            stmts,
-            BATCH_SIZE,
-            CONCURRENCY,
-          );
-        }
-      },
-    );
+        offset += result.processed;
+        headerLine = result.header || "";
+        chunkIndex++;
+      }
+    }
 
     await step.do(`[Import511] Import shapes for ${operatorId}`, async () => {
       const stream = await getFileStream("shapes");
