@@ -165,8 +165,8 @@ function floatOrNull(value: string | undefined): number | null {
 async function batchExecute(
   db: D1Database,
   statements: D1PreparedStatement[],
-  chunkSize = 500,
-  concurrency = 10,
+  chunkSize = 1000,
+  concurrency = 5,
 ): Promise<D1Result[]> {
   const results: D1Result[] = [];
   for (let i = 0; i < statements.length; i += chunkSize * concurrency) {
@@ -542,98 +542,165 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       },
     );
 
-    const { stopMap, parentAssignments } = await step.do(
-      `[Import511] Import stops for ${operatorId}`,
-      async () => {
-        const stream = await getFileStream("stops");
-        const map: Record<string, number> = {};
-        const assignments: Array<{ childPk: number; parentId: string }> = [];
-        const stmt = this.env.gtfs_data.prepare(
-          `
-          INSERT INTO stops (
-            feed_version_id, stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon,
-            zone_id, stop_url, location_type, parent_station, stop_timezone,
-            wheelchair_boarding, level_id, platform_code
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(feed_version_id, stop_id) DO UPDATE SET
-            stop_code = excluded.stop_code,
-            stop_name = excluded.stop_name,
-            stop_desc = excluded.stop_desc,
-            stop_lat = excluded.stop_lat,
-            stop_lon = excluded.stop_lon,
-            zone_id = excluded.zone_id,
-            stop_url = excluded.stop_url,
-            location_type = excluded.location_type,
-            stop_timezone = excluded.stop_timezone,
-            wheelchair_boarding = excluded.wheelchair_boarding,
-            level_id = excluded.level_id,
-            platform_code = excluded.platform_code
-          RETURNING stop_pk
-        `,
-        );
+    const stopsKey = `${prefix}/${GTFS_FILE_NAMES.stops.toLowerCase()}`;
+    const stopsObj = await this.env.gtfs_processing.head(stopsKey);
+    const stopsSize = stopsObj?.size ?? 0;
+    const stopMap: Record<string, number> = {};
+    const parentAssignments: Array<{ childPk: number; parentId: string }> = [];
 
-        let stmts: D1PreparedStatement[] = [];
-        let chunkRows: CsvRow[] = [];
-        const BATCH_SIZE = 500;
-        const CONCURRENCY = 10;
-        const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
+    if (stopsSize > 0) {
+      let offset = 0;
+      const CHUNK_SIZE = 512 * 1024; // 512KB
+      let chunkIndex = 0;
+      let headerLine = "";
 
-        const processBatch = async () => {
-          if (stmts.length === 0) return;
-          const results = await batchExecute(
-            this.env.gtfs_data,
-            stmts,
-            BATCH_SIZE,
-            CONCURRENCY,
-          );
-          chunkRows.forEach((row, i) => {
-            const pk =
-              (results[i].results?.[0] as any)?.stop_pk ||
-              results[i].meta.last_row_id;
-            if (pk) {
-              map[row.stop_id] = pk;
-              if (row.parent_station) {
-                assignments.push({
-                  childPk: pk,
-                  parentId: row.parent_station,
-                });
+      while (offset < stopsSize) {
+        const result = await step.do(
+          `[Import511] Import stops chunk ${chunkIndex} for ${operatorId}`,
+          async () => {
+            const isFirstChunk = offset === 0;
+            const length = Math.min(CHUNK_SIZE, stopsSize - offset);
+
+            let currentHeader = headerLine;
+            if (!isFirstChunk && !currentHeader) {
+              const headObj = await this.env.gtfs_processing.get(stopsKey, {
+                range: { length: 4096 },
+              });
+              if (headObj) {
+                const headText = await headObj.text();
+                const firstLineEnd = headText.indexOf("\n");
+                if (firstLineEnd !== -1) {
+                  currentHeader = headText.substring(0, firstLineEnd).trim();
+                }
               }
             }
-          });
-          stmts = [];
-          chunkRows = [];
-        };
 
-        for await (const row of stream) {
-          chunkRows.push(row);
-          stmts.push(
-            stmt.bind(
-              feedVersionId,
-              row.stop_id,
-              nullIfEmpty(row.stop_code),
-              nullIfEmpty(row.stop_name),
-              nullIfEmpty(row.stop_desc),
-              floatOrNull(row.stop_lat),
-              floatOrNull(row.stop_lon),
-              nullIfEmpty(row.zone_id),
-              nullIfEmpty(row.stop_url),
-              intOrNull(row.location_type),
-              null,
-              nullIfEmpty(row.stop_timezone),
-              intOrNull(row.wheelchair_boarding),
-              nullIfEmpty(row.level_id),
-              nullIfEmpty(row.platform_code),
-            ),
-          );
+            const chunkObj = await this.env.gtfs_processing.get(stopsKey, {
+              range: { offset, length },
+            });
+            if (!chunkObj) return { processed: length, header: currentHeader, map: {}, assignments: [] };
 
-          if (stmts.length >= TOTAL_CHUNK) {
-            await processBatch();
-          }
-        }
-        await processBatch();
-        return { stopMap: map, parentAssignments: assignments };
-      },
-    );
+            let text = await chunkObj.text();
+            let processedBytes = text.length;
+
+            if (offset + length < stopsSize) {
+              const lastNewline = text.lastIndexOf("\n");
+              if (lastNewline !== -1) {
+                text = text.substring(0, lastNewline);
+                processedBytes = lastNewline + 1;
+              }
+            }
+
+            if (isFirstChunk) {
+              const firstNewline = text.indexOf("\n");
+              if (firstNewline !== -1) {
+                currentHeader = text.substring(0, firstNewline).trim();
+              }
+            }
+
+            let csvContent = text;
+            if (!isFirstChunk && currentHeader) {
+              csvContent = currentHeader + "\n" + text;
+            }
+
+            const rows = parseCsv(csvContent);
+            const stmt = this.env.gtfs_data.prepare(
+              `
+              INSERT INTO stops (
+                feed_version_id, stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon,
+                zone_id, stop_url, location_type, parent_station, stop_timezone,
+                wheelchair_boarding, level_id, platform_code
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(feed_version_id, stop_id) DO UPDATE SET
+                stop_code = excluded.stop_code,
+                stop_name = excluded.stop_name,
+                stop_desc = excluded.stop_desc,
+                stop_lat = excluded.stop_lat,
+                stop_lon = excluded.stop_lon,
+                zone_id = excluded.zone_id,
+                stop_url = excluded.stop_url,
+                location_type = excluded.location_type,
+                stop_timezone = excluded.stop_timezone,
+                wheelchair_boarding = excluded.wheelchair_boarding,
+                level_id = excluded.level_id,
+                platform_code = excluded.platform_code
+              RETURNING stop_pk
+            `,
+            );
+
+            let stmts: D1PreparedStatement[] = [];
+            let chunkRowsForMap: CsvRow[] = [];
+            const BATCH_SIZE = 5000;
+            const CONCURRENCY = 1;
+            const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
+            const localMap: Record<string, number> = {};
+            const localAssignments: Array<{ childPk: number; parentId: string }> = [];
+
+            const processLocalBatch = async () => {
+              if (stmts.length === 0) return;
+              const results = await batchExecute(
+                this.env.gtfs_data,
+                stmts,
+                BATCH_SIZE,
+                CONCURRENCY,
+              );
+              chunkRowsForMap.forEach((row, i) => {
+                const pk =
+                  (results[i].results?.[0] as any)?.stop_pk ||
+                  results[i].meta.last_row_id;
+                if (pk) {
+                  localMap[row.stop_id] = pk;
+                  if (row.parent_station) {
+                    localAssignments.push({
+                      childPk: pk,
+                      parentId: row.parent_station,
+                    });
+                  }
+                }
+              });
+              stmts = [];
+              chunkRowsForMap = [];
+            };
+
+            for (const row of rows) {
+              chunkRowsForMap.push(row);
+              stmts.push(
+                stmt.bind(
+                  feedVersionId,
+                  row.stop_id,
+                  nullIfEmpty(row.stop_code),
+                  nullIfEmpty(row.stop_name),
+                  nullIfEmpty(row.stop_desc),
+                  floatOrNull(row.stop_lat),
+                  floatOrNull(row.stop_lon),
+                  nullIfEmpty(row.zone_id),
+                  nullIfEmpty(row.stop_url),
+                  intOrNull(row.location_type),
+                  null,
+                  nullIfEmpty(row.stop_timezone),
+                  intOrNull(row.wheelchair_boarding),
+                  nullIfEmpty(row.level_id),
+                  nullIfEmpty(row.platform_code),
+                ),
+              );
+
+              if (stmts.length >= TOTAL_CHUNK) {
+                await processLocalBatch();
+              }
+            }
+            await processLocalBatch();
+
+            return { processed: processedBytes, header: currentHeader, map: localMap, assignments: localAssignments };
+          },
+        );
+
+        offset += result.processed;
+        headerLine = result.header || "";
+        Object.assign(stopMap, result.map);
+        parentAssignments.push(...result.assignments);
+        chunkIndex++;
+      }
+    }
 
     if (parentAssignments.length) {
       await step.do(
@@ -725,83 +792,148 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       },
     );
 
-    const tripMap = await step.do(
-      `[Import511] Import trips for ${operatorId}`,
-      async () => {
-        const stream = await getFileStream("trips");
-        const map: Record<string, number> = {};
-        const stmt = this.env.gtfs_data.prepare(
-          `
-          INSERT INTO trips (
-            feed_version_id, trip_id, route_pk, service_id, trip_headsign, trip_short_name,
-            direction_id, block_id, shape_id, wheelchair_accessible, bikes_allowed
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(feed_version_id, trip_id) DO UPDATE SET
-            route_pk = excluded.route_pk,
-            service_id = excluded.service_id,
-            trip_headsign = excluded.trip_headsign,
-            trip_short_name = excluded.trip_short_name,
-            direction_id = excluded.direction_id,
-            block_id = excluded.block_id,
-            shape_id = excluded.shape_id,
-            wheelchair_accessible = excluded.wheelchair_accessible,
-            bikes_allowed = excluded.bikes_allowed
-          RETURNING trip_pk
-        `,
+    const tripsKey = `${prefix}/${GTFS_FILE_NAMES.trips.toLowerCase()}`;
+    const tripsObj = await this.env.gtfs_processing.head(tripsKey);
+    const tripsSize = tripsObj?.size ?? 0;
+    const tripMap: Record<string, number> = {};
+
+    if (tripsSize > 0) {
+      let offset = 0;
+      const CHUNK_SIZE = 512 * 1024; // 512KB
+      let chunkIndex = 0;
+      let headerLine = "";
+
+      while (offset < tripsSize) {
+        const result = await step.do(
+          `[Import511] Import trips chunk ${chunkIndex} for ${operatorId}`,
+          async () => {
+            const isFirstChunk = offset === 0;
+            const length = Math.min(CHUNK_SIZE, tripsSize - offset);
+
+            let currentHeader = headerLine;
+            if (!isFirstChunk && !currentHeader) {
+              const headObj = await this.env.gtfs_processing.get(tripsKey, {
+                range: { length: 4096 },
+              });
+              if (headObj) {
+                const headText = await headObj.text();
+                const firstLineEnd = headText.indexOf("\n");
+                if (firstLineEnd !== -1) {
+                  currentHeader = headText.substring(0, firstLineEnd).trim();
+                }
+              }
+            }
+
+            const chunkObj = await this.env.gtfs_processing.get(tripsKey, {
+              range: { offset, length },
+            });
+            if (!chunkObj) return { processed: length, header: currentHeader, map: {} };
+
+            let text = await chunkObj.text();
+            let processedBytes = text.length;
+
+            if (offset + length < tripsSize) {
+              const lastNewline = text.lastIndexOf("\n");
+              if (lastNewline !== -1) {
+                text = text.substring(0, lastNewline);
+                processedBytes = lastNewline + 1;
+              }
+            }
+
+            if (isFirstChunk) {
+              const firstNewline = text.indexOf("\n");
+              if (firstNewline !== -1) {
+                currentHeader = text.substring(0, firstNewline).trim();
+              }
+            }
+
+            let csvContent = text;
+            if (!isFirstChunk && currentHeader) {
+              csvContent = currentHeader + "\n" + text;
+            }
+
+            const rows = parseCsv(csvContent);
+            const stmt = this.env.gtfs_data.prepare(
+              `
+              INSERT INTO trips (
+                feed_version_id, trip_id, route_pk, service_id, trip_headsign, trip_short_name,
+                direction_id, block_id, shape_id, wheelchair_accessible, bikes_allowed
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(feed_version_id, trip_id) DO UPDATE SET
+                route_pk = excluded.route_pk,
+                service_id = excluded.service_id,
+                trip_headsign = excluded.trip_headsign,
+                trip_short_name = excluded.trip_short_name,
+                direction_id = excluded.direction_id,
+                block_id = excluded.block_id,
+                shape_id = excluded.shape_id,
+                wheelchair_accessible = excluded.wheelchair_accessible,
+                bikes_allowed = excluded.bikes_allowed
+              RETURNING trip_pk
+            `,
+            );
+
+            let stmts: D1PreparedStatement[] = [];
+            let chunkRowsForMap: CsvRow[] = [];
+            const BATCH_SIZE = 5000;
+            const CONCURRENCY = 1;
+            const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
+            const localMap: Record<string, number> = {};
+
+            const processLocalBatch = async () => {
+              if (stmts.length === 0) return;
+              const results = await batchExecute(
+                this.env.gtfs_data,
+                stmts,
+                BATCH_SIZE,
+                CONCURRENCY,
+              );
+              chunkRowsForMap.forEach((row, i) => {
+                const pk =
+                  (results[i].results?.[0] as any)?.trip_pk ||
+                  results[i].meta.last_row_id;
+                if (pk) localMap[row.trip_id] = pk;
+              });
+              stmts = [];
+              chunkRowsForMap = [];
+            };
+
+            for (const row of rows) {
+              const routePk = routeMap[row.route_id];
+              if (!routePk) continue;
+              chunkRowsForMap.push(row);
+              stmts.push(
+                stmt.bind(
+                  feedVersionId,
+                  row.trip_id,
+                  routePk,
+                  row.service_id,
+                  nullIfEmpty(row.trip_headsign),
+                  nullIfEmpty(row.trip_short_name),
+                  intOrNull(row.direction_id),
+                  nullIfEmpty(row.block_id),
+                  nullIfEmpty(row.shape_id),
+                  intOrNull(row.wheelchair_accessible),
+                  intOrNull(row.bikes_allowed),
+                ),
+              );
+
+              if (stmts.length >= TOTAL_CHUNK) {
+                await processLocalBatch();
+              }
+            }
+            await processLocalBatch();
+
+            return { processed: processedBytes, header: currentHeader, map: localMap };
+          },
         );
 
-        let stmts: D1PreparedStatement[] = [];
-        let chunkRows: CsvRow[] = [];
-        const BATCH_SIZE = 500;
-        const CONCURRENCY = 10;
-        const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
-
-        const processBatch = async () => {
-          if (stmts.length === 0) return;
-          const results = await batchExecute(
-            this.env.gtfs_data,
-            stmts,
-            BATCH_SIZE,
-            CONCURRENCY,
-          );
-          chunkRows.forEach((row, i) => {
-            const pk =
-              (results[i].results?.[0] as any)?.trip_pk ||
-              results[i].meta.last_row_id;
-            if (pk) map[row.trip_id] = pk;
-          });
-          stmts = [];
-          chunkRows = [];
-        };
-
-        for await (const row of stream) {
-          const routePk = routeMap[row.route_id];
-          if (!routePk) continue;
-          chunkRows.push(row);
-          stmts.push(
-            stmt.bind(
-              feedVersionId,
-              row.trip_id,
-              routePk,
-              row.service_id,
-              nullIfEmpty(row.trip_headsign),
-              nullIfEmpty(row.trip_short_name),
-              intOrNull(row.direction_id),
-              nullIfEmpty(row.block_id),
-              nullIfEmpty(row.shape_id),
-              intOrNull(row.wheelchair_accessible),
-              intOrNull(row.bikes_allowed),
-            ),
-          );
-
-          if (stmts.length >= TOTAL_CHUNK) {
-            await processBatch();
-          }
-        }
-        await processBatch();
-        return map;
-      },
-    );
+        offset += result.processed;
+        headerLine = result.header || "";
+        Object.assign(tripMap, result.map);
+        chunkIndex++;
+      }
+    }
 
     const stopTimesKey = `${prefix}/${GTFS_FILE_NAMES.stop_times.toLowerCase()}`;
     const stopTimesObj = await this.env.gtfs_processing.head(stopTimesKey);
@@ -890,8 +1022,8 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             );
 
             let stmts: D1PreparedStatement[] = [];
-            const BATCH_SIZE = 100;
-            const CONCURRENCY = 10;
+            const BATCH_SIZE = 5000;
+            const CONCURRENCY = 1;
             const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
 
             for (const row of rows) {
@@ -942,51 +1074,123 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       }
     }
 
-    await step.do(`[Import511] Import shapes for ${operatorId}`, async () => {
-      const stream = await getFileStream("shapes");
-      const stmt = this.env.gtfs_data.prepare(
-        `
-        INSERT INTO shapes (
-          feed_version_id, shape_id, shape_pt_lat, shape_pt_lon, shape_pt_sequence, shape_dist_traveled
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(feed_version_id, shape_id, shape_pt_sequence) DO UPDATE SET
-          shape_pt_lat = excluded.shape_pt_lat,
-          shape_pt_lon = excluded.shape_pt_lon,
-          shape_dist_traveled = excluded.shape_dist_traveled
-      `,
-      );
+    const shapesKey = `${prefix}/${GTFS_FILE_NAMES.shapes.toLowerCase()}`;
+    const shapesObj = await this.env.gtfs_processing.head(shapesKey);
+    const shapesSize = shapesObj?.size ?? 0;
 
-      let stmts: D1PreparedStatement[] = [];
-      const BATCH_SIZE = 500;
-      const CONCURRENCY = 10;
-      const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
+    if (shapesSize > 0) {
+      let offset = 0;
+      const CHUNK_SIZE = 256 * 1024; // 256KB
+      let chunkIndex = 0;
+      let headerLine = "";
 
-      for await (const row of stream) {
-        stmts.push(
-          stmt.bind(
-            feedVersionId,
-            row.shape_id,
-            floatOrNull(row.shape_pt_lat),
-            floatOrNull(row.shape_pt_lon),
-            intOrNull(row.shape_pt_sequence),
-            floatOrNull(row.shape_dist_traveled),
-          ),
+      while (offset < shapesSize) {
+        const result = await step.do(
+          `[Import511] Import shapes chunk ${chunkIndex} for ${operatorId}`,
+          async () => {
+            const isFirstChunk = offset === 0;
+            const length = Math.min(CHUNK_SIZE, shapesSize - offset);
+
+            let currentHeader = headerLine;
+            if (!isFirstChunk && !currentHeader) {
+              const headObj = await this.env.gtfs_processing.get(shapesKey, {
+                range: { length: 4096 },
+              });
+              if (headObj) {
+                const headText = await headObj.text();
+                const firstLineEnd = headText.indexOf("\n");
+                if (firstLineEnd !== -1) {
+                  currentHeader = headText.substring(0, firstLineEnd).trim();
+                }
+              }
+            }
+
+            const chunkObj = await this.env.gtfs_processing.get(shapesKey, {
+              range: { offset, length },
+            });
+            if (!chunkObj) return { processed: length, header: currentHeader };
+
+            let text = await chunkObj.text();
+            let processedBytes = text.length;
+
+            if (offset + length < shapesSize) {
+              const lastNewline = text.lastIndexOf("\n");
+              if (lastNewline !== -1) {
+                text = text.substring(0, lastNewline);
+                processedBytes = lastNewline + 1;
+              }
+            }
+
+            if (isFirstChunk) {
+              const firstNewline = text.indexOf("\n");
+              if (firstNewline !== -1) {
+                currentHeader = text.substring(0, firstNewline).trim();
+              }
+            }
+
+            let csvContent = text;
+            if (!isFirstChunk && currentHeader) {
+              csvContent = currentHeader + "\n" + text;
+            }
+
+            const rows = parseCsv(csvContent);
+            const stmt = this.env.gtfs_data.prepare(
+              `
+              INSERT INTO shapes (
+                feed_version_id, shape_id, shape_pt_lat, shape_pt_lon, shape_pt_sequence, shape_dist_traveled
+              ) VALUES (?, ?, ?, ?, ?, ?)
+              ON CONFLICT(feed_version_id, shape_id, shape_pt_sequence) DO UPDATE SET
+                shape_pt_lat = excluded.shape_pt_lat,
+                shape_pt_lon = excluded.shape_pt_lon,
+                shape_dist_traveled = excluded.shape_dist_traveled
+            `,
+            );
+
+            let stmts: D1PreparedStatement[] = [];
+            const BATCH_SIZE = 5000;
+            const CONCURRENCY = 1;
+            const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
+
+            for (const row of rows) {
+              stmts.push(
+                stmt.bind(
+                  feedVersionId,
+                  row.shape_id,
+                  floatOrNull(row.shape_pt_lat),
+                  floatOrNull(row.shape_pt_lon),
+                  intOrNull(row.shape_pt_sequence),
+                  floatOrNull(row.shape_dist_traveled),
+                ),
+              );
+
+              if (stmts.length >= TOTAL_CHUNK) {
+                await batchExecute(
+                  this.env.gtfs_data,
+                  stmts,
+                  BATCH_SIZE,
+                  CONCURRENCY,
+                );
+                stmts = [];
+              }
+            }
+            if (stmts.length) {
+              await batchExecute(
+                this.env.gtfs_data,
+                stmts,
+                BATCH_SIZE,
+                CONCURRENCY,
+              );
+            }
+
+            return { processed: processedBytes, header: currentHeader };
+          },
         );
 
-        if (stmts.length >= TOTAL_CHUNK) {
-          await batchExecute(
-            this.env.gtfs_data,
-            stmts,
-            BATCH_SIZE,
-            CONCURRENCY,
-          );
-          stmts = [];
-        }
+        offset += result.processed;
+        headerLine = result.header || "";
+        chunkIndex++;
       }
-      if (stmts.length) {
-        await batchExecute(this.env.gtfs_data, stmts, BATCH_SIZE, CONCURRENCY);
-      }
-    });
+    }
 
     await step.do(
       `[Import511] Import fare_attributes for ${operatorId}`,
