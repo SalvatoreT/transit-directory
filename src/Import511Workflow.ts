@@ -809,7 +809,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
 
     if (stopTimesSize > 0) {
       let offset = 0;
-      const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+      const CHUNK_SIZE = 256 * 1024; // 256KB
       let chunkIndex = 0;
       let headerLine = "";
 
@@ -890,7 +890,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             );
 
             let stmts: D1PreparedStatement[] = [];
-            const BATCH_SIZE = 500;
+            const BATCH_SIZE = 100;
             const CONCURRENCY = 10;
             const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
 
