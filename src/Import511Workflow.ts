@@ -578,7 +578,13 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             const chunkObj = await this.env.gtfs_processing.get(stopsKey, {
               range: { offset, length },
             });
-            if (!chunkObj) return { processed: length, header: currentHeader, map: {}, assignments: [] };
+            if (!chunkObj)
+              return {
+                processed: length,
+                header: currentHeader,
+                map: {},
+                assignments: [],
+              };
 
             let text = await chunkObj.text();
             let processedBytes = text.length;
@@ -634,7 +640,10 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             const CONCURRENCY = 1;
             const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
             const localMap: Record<string, number> = {};
-            const localAssignments: Array<{ childPk: number; parentId: string }> = [];
+            const localAssignments: Array<{
+              childPk: number;
+              parentId: string;
+            }> = [];
 
             const processLocalBatch = async () => {
               if (stmts.length === 0) return;
@@ -690,7 +699,12 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             }
             await processLocalBatch();
 
-            return { processed: processedBytes, header: currentHeader, map: localMap, assignments: localAssignments };
+            return {
+              processed: processedBytes,
+              header: currentHeader,
+              map: localMap,
+              assignments: localAssignments,
+            };
           },
         );
 
@@ -827,7 +841,8 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             const chunkObj = await this.env.gtfs_processing.get(tripsKey, {
               range: { offset, length },
             });
-            if (!chunkObj) return { processed: length, header: currentHeader, map: {} };
+            if (!chunkObj)
+              return { processed: length, header: currentHeader, map: {} };
 
             let text = await chunkObj.text();
             let processedBytes = text.length;
@@ -924,7 +939,11 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             }
             await processLocalBatch();
 
-            return { processed: processedBytes, header: currentHeader, map: localMap };
+            return {
+              processed: processedBytes,
+              header: currentHeader,
+              map: localMap,
+            };
           },
         );
 
