@@ -96,6 +96,51 @@ function parseCsv(text: string): CsvRow[] {
   });
 }
 
+async function* streamCsv(
+  stream: ReadableStream<Uint8Array>,
+): AsyncGenerator<CsvRow> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let leftover = "";
+  let headers: string[] | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const chunk = leftover + decoder.decode(value, { stream: true });
+    const lines = chunk.split(
+      new RegExp(String.fromCharCode(13) + "?" + String.fromCharCode(10)),
+    );
+    leftover = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const values = splitCsvLine(line);
+      if (!headers) {
+        headers = values;
+      } else {
+        const row: CsvRow = {};
+        headers.forEach((h, idx) => {
+          row[h] = values[idx] ?? "";
+        });
+        yield row;
+      }
+    }
+  }
+
+  if (leftover.trim()) {
+    const values = splitCsvLine(leftover);
+    if (headers) {
+      const row: CsvRow = {};
+      headers.forEach((h, idx) => {
+        row[h] = values[idx] ?? "";
+      });
+      yield row;
+    }
+  }
+}
+
 function nullIfEmpty(value: string | undefined): string | null {
   if (value === undefined) return null;
   return value === "" ? null : value;
@@ -175,7 +220,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           if (file.dir) continue;
           const fileName = name.split("/").pop();
           if (fileName) {
-            const content = await file.async("string");
+            const content = await file.async("uint8array");
             await this.env.gtfs_processing.put(
               `${prefix}/${fileName.toLowerCase()}`,
               content,
@@ -194,6 +239,19 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       if (!object) return [];
       const content = await object.text();
       return parseCsv(content);
+    };
+
+    const getFileStream = async (
+      key: FileKey,
+    ): Promise<AsyncGenerator<CsvRow>> => {
+      const fileName = GTFS_FILE_NAMES[key].toLowerCase();
+      const object = await this.env.gtfs_processing.get(
+        `${prefix}/${fileName}`,
+      );
+      if (!object || !object.body) {
+        return (async function* () {})();
+      }
+      return streamCsv(object.body);
     };
 
     const { feedVersionId, feedInfo } = await step.do(
@@ -487,7 +545,9 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
     const { stopMap, parentAssignments } = await step.do(
       `[Import511] Import stops for ${operatorId}`,
       async () => {
-        const stopRows = await getFileRows("stops");
+        const stream = await getFileStream("stops");
+        const map: Record<string, number> = {};
+        const assignments: Array<{ childPk: number; parentId: string }> = [];
         const stmt = this.env.gtfs_data.prepare(
           `
           INSERT INTO stops (
@@ -512,31 +572,21 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
         `,
         );
 
-        const stmts = stopRows.map((row) =>
-          stmt.bind(
-            feedVersionId,
-            row.stop_id,
-            nullIfEmpty(row.stop_code),
-            nullIfEmpty(row.stop_name),
-            nullIfEmpty(row.stop_desc),
-            floatOrNull(row.stop_lat),
-            floatOrNull(row.stop_lon),
-            nullIfEmpty(row.zone_id),
-            nullIfEmpty(row.stop_url),
-            intOrNull(row.location_type),
-            null,
-            nullIfEmpty(row.stop_timezone),
-            intOrNull(row.wheelchair_boarding),
-            nullIfEmpty(row.level_id),
-            nullIfEmpty(row.platform_code),
-          ),
-        );
+        let stmts: D1PreparedStatement[] = [];
+        let chunkRows: CsvRow[] = [];
+        const BATCH_SIZE = 500;
+        const CONCURRENCY = 10;
+        const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
 
-        const map: Record<string, number> = {};
-        const assignments: Array<{ childPk: number; parentId: string }> = [];
-        if (stmts.length) {
-          const results = await batchExecute(this.env.gtfs_data, stmts);
-          stopRows.forEach((row, i) => {
+        const processBatch = async () => {
+          if (stmts.length === 0) return;
+          const results = await batchExecute(
+            this.env.gtfs_data,
+            stmts,
+            BATCH_SIZE,
+            CONCURRENCY,
+          );
+          chunkRows.forEach((row, i) => {
             const pk =
               (results[i].results?.[0] as any)?.stop_pk ||
               results[i].meta.last_row_id;
@@ -550,7 +600,37 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
               }
             }
           });
+          stmts = [];
+          chunkRows = [];
+        };
+
+        for await (const row of stream) {
+          chunkRows.push(row);
+          stmts.push(
+            stmt.bind(
+              feedVersionId,
+              row.stop_id,
+              nullIfEmpty(row.stop_code),
+              nullIfEmpty(row.stop_name),
+              nullIfEmpty(row.stop_desc),
+              floatOrNull(row.stop_lat),
+              floatOrNull(row.stop_lon),
+              nullIfEmpty(row.zone_id),
+              nullIfEmpty(row.stop_url),
+              intOrNull(row.location_type),
+              null,
+              nullIfEmpty(row.stop_timezone),
+              intOrNull(row.wheelchair_boarding),
+              nullIfEmpty(row.level_id),
+              nullIfEmpty(row.platform_code),
+            ),
+          );
+
+          if (stmts.length >= TOTAL_CHUNK) {
+            await processBatch();
+          }
         }
+        await processBatch();
         return { stopMap: map, parentAssignments: assignments };
       },
     );
@@ -648,8 +728,8 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
     const tripMap = await step.do(
       `[Import511] Import trips for ${operatorId}`,
       async () => {
-        const rawTripRows = await getFileRows("trips");
-        const tripRows: CsvRow[] = [];
+        const stream = await getFileStream("trips");
+        const map: Record<string, number> = {};
         const stmt = this.env.gtfs_data.prepare(
           `
           INSERT INTO trips (
@@ -670,12 +750,34 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
         `,
         );
 
-        const stmts: D1PreparedStatement[] = [];
+        let stmts: D1PreparedStatement[] = [];
+        let chunkRows: CsvRow[] = [];
+        const BATCH_SIZE = 500;
+        const CONCURRENCY = 10;
+        const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
 
-        for (const row of rawTripRows) {
+        const processBatch = async () => {
+          if (stmts.length === 0) return;
+          const results = await batchExecute(
+            this.env.gtfs_data,
+            stmts,
+            BATCH_SIZE,
+            CONCURRENCY,
+          );
+          chunkRows.forEach((row, i) => {
+            const pk =
+              (results[i].results?.[0] as any)?.trip_pk ||
+              results[i].meta.last_row_id;
+            if (pk) map[row.trip_id] = pk;
+          });
+          stmts = [];
+          chunkRows = [];
+        };
+
+        for await (const row of stream) {
           const routePk = routeMap[row.route_id];
           if (!routePk) continue;
-          tripRows.push(row);
+          chunkRows.push(row);
           stmts.push(
             stmt.bind(
               feedVersionId,
@@ -691,17 +793,12 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
               intOrNull(row.bikes_allowed),
             ),
           );
+
+          if (stmts.length >= TOTAL_CHUNK) {
+            await processBatch();
+          }
         }
-        const map: Record<string, number> = {};
-        if (stmts.length) {
-          const results = await batchExecute(this.env.gtfs_data, stmts);
-          tripRows.forEach((row, i) => {
-            const pk =
-              (results[i].results?.[0] as any)?.trip_pk ||
-              results[i].meta.last_row_id;
-            if (pk) map[row.trip_id] = pk;
-          });
-        }
+        await processBatch();
         return map;
       },
     );
@@ -709,7 +806,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
     await step.do(
       `[Import511] Import stop_times for ${operatorId}`,
       async () => {
-        const stopTimeRows = await getFileRows("stop_times");
+        const stream = await getFileStream("stop_times");
         const stmt = this.env.gtfs_data.prepare(
           `
           INSERT INTO stop_times (
@@ -728,8 +825,12 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
         `,
         );
 
-        const stmts: D1PreparedStatement[] = [];
-        for (const row of stopTimeRows) {
+        let stmts: D1PreparedStatement[] = [];
+        const BATCH_SIZE = 500;
+        const CONCURRENCY = 10;
+        const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
+
+        for await (const row of stream) {
           const tripPk = tripMap[row.trip_id];
           const stopPk = stopMap[row.stop_id];
           if (!tripPk || !stopPk) continue;
@@ -747,15 +848,30 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
               intOrNull(row.timepoint),
             ),
           );
+
+          if (stmts.length >= TOTAL_CHUNK) {
+            await batchExecute(
+              this.env.gtfs_data,
+              stmts,
+              BATCH_SIZE,
+              CONCURRENCY,
+            );
+            stmts = [];
+          }
         }
         if (stmts.length) {
-          await batchExecute(this.env.gtfs_data, stmts);
+          await batchExecute(
+            this.env.gtfs_data,
+            stmts,
+            BATCH_SIZE,
+            CONCURRENCY,
+          );
         }
       },
     );
 
     await step.do(`[Import511] Import shapes for ${operatorId}`, async () => {
-      const shapeRows = await getFileRows("shapes");
+      const stream = await getFileStream("shapes");
       const stmt = this.env.gtfs_data.prepare(
         `
         INSERT INTO shapes (
@@ -767,18 +883,36 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           shape_dist_traveled = excluded.shape_dist_traveled
       `,
       );
-      const stmts = shapeRows.map((row) =>
-        stmt.bind(
-          feedVersionId,
-          row.shape_id,
-          floatOrNull(row.shape_pt_lat),
-          floatOrNull(row.shape_pt_lon),
-          intOrNull(row.shape_pt_sequence),
-          floatOrNull(row.shape_dist_traveled),
-        ),
-      );
+
+      let stmts: D1PreparedStatement[] = [];
+      const BATCH_SIZE = 500;
+      const CONCURRENCY = 10;
+      const TOTAL_CHUNK = BATCH_SIZE * CONCURRENCY;
+
+      for await (const row of stream) {
+        stmts.push(
+          stmt.bind(
+            feedVersionId,
+            row.shape_id,
+            floatOrNull(row.shape_pt_lat),
+            floatOrNull(row.shape_pt_lon),
+            intOrNull(row.shape_pt_sequence),
+            floatOrNull(row.shape_dist_traveled),
+          ),
+        );
+
+        if (stmts.length >= TOTAL_CHUNK) {
+          await batchExecute(
+            this.env.gtfs_data,
+            stmts,
+            BATCH_SIZE,
+            CONCURRENCY,
+          );
+          stmts = [];
+        }
+      }
       if (stmts.length) {
-        await batchExecute(this.env.gtfs_data, stmts);
+        await batchExecute(this.env.gtfs_data, stmts, BATCH_SIZE, CONCURRENCY);
       }
     });
 
