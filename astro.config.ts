@@ -14,7 +14,13 @@ export default defineConfig({
     },
     workerEntryPoint: {
       path: "src/worker.ts",
-      namedExports: ["createExports", "Import511Workflow"],
+      namedExports: [
+        "createExports",
+        "Import511Workflow",
+        "ImportTripUpdatesWorkflow",
+        "ImportVehiclePositionsWorkflow",
+        "ImportServiceAlertsWorkflow",
+      ],
     },
   }),
 });
