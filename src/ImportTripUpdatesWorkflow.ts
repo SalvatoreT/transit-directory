@@ -3,7 +3,6 @@ import {
   type WorkflowEvent,
   WorkflowStep,
 } from "cloudflare:workers";
-import { transit_realtime } from "./gtfs-realtime";
 import {
   fetchAndDecodeFeed,
   getFeedContext,
@@ -42,8 +41,6 @@ export class ImportTripUpdatesWorkflow extends WorkflowEntrypoint<
         );
       }
 
-      const updatesToInsert = [];
-
       // We need to resolve trip_pk for each update
       // To be efficient, we can batch collect trip_ids and query them, or just do individual lookups if not too many.
       // For simplicity and to avoid complex batching logic in this iteration, let's try to prepare a map first.
@@ -80,11 +77,6 @@ export class ImportTripUpdatesWorkflow extends WorkflowEntrypoint<
       const stmt = this.env.gtfs_data.prepare(`
           INSERT INTO trip_updates (feed_source_id, trip_id, trip_pk, delay, status, updated_time)
           VALUES (?, ?, ?, ?, ?, ?)
-          ON CONFLICT(feed_source_id, trip_id) DO UPDATE SET
-            trip_pk = excluded.trip_pk,
-            delay = excluded.delay,
-            status = excluded.status,
-            updated_time = excluded.updated_time
         `);
 
       const batch = [];

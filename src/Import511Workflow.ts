@@ -96,51 +96,6 @@ function parseCsv(text: string): CsvRow[] {
   });
 }
 
-async function* streamCsv(
-  stream: ReadableStream<Uint8Array>,
-): AsyncGenerator<CsvRow> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let leftover = "";
-  let headers: string[] | null = null;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    const chunk = leftover + decoder.decode(value, { stream: true });
-    const lines = chunk.split(
-      new RegExp(String.fromCharCode(13) + "?" + String.fromCharCode(10)),
-    );
-    leftover = lines.pop() || "";
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const values = splitCsvLine(line);
-      if (!headers) {
-        headers = values;
-      } else {
-        const row: CsvRow = {};
-        headers.forEach((h, idx) => {
-          row[h] = values[idx] ?? "";
-        });
-        yield row;
-      }
-    }
-  }
-
-  if (leftover.trim()) {
-    const values = splitCsvLine(leftover);
-    if (headers) {
-      const row: CsvRow = {};
-      headers.forEach((h, idx) => {
-        row[h] = values[idx] ?? "";
-      });
-      yield row;
-    }
-  }
-}
-
 function nullIfEmpty(value: string | undefined): string | null {
   if (value === undefined) return null;
   return value === "" ? null : value;
@@ -241,20 +196,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       return parseCsv(content);
     };
 
-    const getFileStream = async (
-      key: FileKey,
-    ): Promise<AsyncGenerator<CsvRow>> => {
-      const fileName = GTFS_FILE_NAMES[key].toLowerCase();
-      const object = await this.env.gtfs_processing.get(
-        `${prefix}/${fileName}`,
-      );
-      if (!object || !object.body) {
-        return (async function* () {})();
-      }
-      return streamCsv(object.body);
-    };
-
-    const { feedVersionId, feedInfo } = await step.do(
+    const { feedVersionId, feedInfo, isNewVersion } = await step.do(
       `[Import511] Initialize feed version for ${operatorId}`,
       async () => {
         const agencyRows = await getFileRows("agency");
@@ -311,9 +253,12 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
         let feedVersionId = res.results?.[0]?.feed_version_id as
           | number
           | undefined;
+        let isNewVersion = false;
 
-        if (!feedVersionId) {
-          // Version already exists! Get ID and delete existing data for a clean re-import
+        if (feedVersionId) {
+          isNewVersion = true;
+        } else {
+          // Version already exists! Get ID
           const existing = await this.env.gtfs_data
             .prepare(
               "SELECT feed_version_id FROM feed_version WHERE feed_source_id = ? AND version_label = ?",
@@ -325,7 +270,50 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             throw new Error("Failed to find existing feed_version_id");
           feedVersionId = existing.feed_version_id;
 
+          // Ensure it is active
+          await this.env.gtfs_data
+            .prepare(
+              "UPDATE feed_version SET is_active = 1 WHERE feed_version_id = ?",
+            )
+            .bind(feedVersionId)
+            .run();
+        }
+
+        if (isNewVersion) {
           await this.env.gtfs_data.batch([
+            // Clear realtime references first to avoid FK violations
+            this.env.gtfs_data
+              .prepare(
+                "UPDATE trip_updates SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare(
+                "UPDATE vehicle_positions SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare(
+                "UPDATE vehicle_positions SET route_pk = NULL WHERE route_pk IN (SELECT route_pk FROM routes WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare(
+                "UPDATE service_alerts SET affected_trip_pk = NULL WHERE affected_trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare(
+                "UPDATE service_alerts SET affected_route_pk = NULL WHERE affected_route_pk IN (SELECT route_pk FROM routes WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare(
+                "UPDATE service_alerts SET affected_stop_pk = NULL WHERE affected_stop_pk IN (SELECT stop_pk FROM stops WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+
+            // Delete static data
             this.env.gtfs_data
               .prepare(
                 "DELETE FROM stop_times WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
@@ -389,11 +377,11 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           .bind(feedSourceId, feedVersionId)
           .run();
 
-        return { feedVersionId, feedInfo };
+        return { feedVersionId, feedInfo, isNewVersion };
       },
     );
 
-    if (feedInfo) {
+    if (isNewVersion && feedInfo) {
       await step.do(
         `[Import511] Import feed_info for ${operatorId}`,
         async () => {
@@ -431,12 +419,14 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       );
     }
 
-    const agencyMap = await step.do(
-      `[Import511] Import agencies for ${operatorId}`,
-      async () => {
-        const agencyRows = await getFileRows("agency");
-        const stmt = this.env.gtfs_data.prepare(
-          `
+    let agencyMap: Record<string, number> = {};
+    if (isNewVersion) {
+      agencyMap = await step.do(
+        `[Import511] Import agencies for ${operatorId}`,
+        async () => {
+          const agencyRows = await getFileRows("agency");
+          const stmt = this.env.gtfs_data.prepare(
+            `
           INSERT INTO agency (
             feed_version_id, agency_id, agency_name, agency_url, agency_timezone,
             agency_lang, agency_phone, agency_fare_url, agency_email
@@ -451,42 +441,45 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             agency_email = excluded.agency_email
           RETURNING agency_pk
         `,
-        );
+          );
 
-        const stmts = agencyRows.map((row) =>
-          stmt.bind(
-            feedVersionId,
-            nullIfEmpty(row.agency_id),
-            nullIfEmpty(row.agency_name),
-            nullIfEmpty(row.agency_url),
-            nullIfEmpty(row.agency_timezone),
-            nullIfEmpty(row.agency_lang),
-            nullIfEmpty(row.agency_phone),
-            nullIfEmpty(row.agency_fare_url),
-            nullIfEmpty(row.agency_email),
-          ),
-        );
+          const stmts = agencyRows.map((row) =>
+            stmt.bind(
+              feedVersionId,
+              nullIfEmpty(row.agency_id),
+              nullIfEmpty(row.agency_name),
+              nullIfEmpty(row.agency_url),
+              nullIfEmpty(row.agency_timezone),
+              nullIfEmpty(row.agency_lang),
+              nullIfEmpty(row.agency_phone),
+              nullIfEmpty(row.agency_fare_url),
+              nullIfEmpty(row.agency_email),
+            ),
+          );
 
-        const map: Record<string, number> = {};
-        if (stmts.length) {
-          const results = await batchExecute(this.env.gtfs_data, stmts);
-          agencyRows.forEach((row, i) => {
-            const pk =
-              (results[i].results?.[0] as any)?.agency_pk ||
-              results[i].meta.last_row_id;
-            if (pk) map[row.agency_id || ""] = pk;
-          });
-        }
-        return map;
-      },
-    );
+          const map: Record<string, number> = {};
+          if (stmts.length) {
+            const results = await batchExecute(this.env.gtfs_data, stmts);
+            agencyRows.forEach((row, i) => {
+              const pk =
+                (results[i].results?.[0] as any)?.agency_pk ||
+                results[i].meta.last_row_id;
+              if (pk) map[row.agency_id || ""] = pk;
+            });
+          }
+          return map;
+        },
+      );
+    }
 
-    const routeMap = await step.do(
-      `[Import511] Import routes for ${operatorId}`,
-      async () => {
-        const routeRows = await getFileRows("routes");
-        const stmt = this.env.gtfs_data.prepare(
-          `
+    let routeMap: Record<string, number> = {};
+    if (isNewVersion) {
+      routeMap = await step.do(
+        `[Import511] Import routes for ${operatorId}`,
+        async () => {
+          const routeRows = await getFileRows("routes");
+          const stmt = this.env.gtfs_data.prepare(
+            `
           INSERT INTO routes (
             feed_version_id, route_id, agency_pk, route_short_name, route_long_name,
             route_desc, route_type, route_url, route_color, route_text_color,
@@ -507,40 +500,41 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             network_id = excluded.network_id
           RETURNING route_pk
         `,
-        );
+          );
 
-        const stmts = routeRows.map((row) =>
-          stmt.bind(
-            feedVersionId,
-            row.route_id,
-            agencyMap[row.agency_id || ""] ?? null,
-            nullIfEmpty(row.route_short_name),
-            nullIfEmpty(row.route_long_name),
-            nullIfEmpty(row.route_desc),
-            intOrNull(row.route_type),
-            nullIfEmpty(row.route_url),
-            nullIfEmpty(row.route_color),
-            nullIfEmpty(row.route_text_color),
-            intOrNull(row.route_sort_order),
-            intOrNull(row.continuous_pickup),
-            intOrNull(row.continuous_drop_off),
-            nullIfEmpty(row.network_id),
-          ),
-        );
+          const stmts = routeRows.map((row) =>
+            stmt.bind(
+              feedVersionId,
+              row.route_id,
+              agencyMap[row.agency_id || ""] ?? null,
+              nullIfEmpty(row.route_short_name),
+              nullIfEmpty(row.route_long_name),
+              nullIfEmpty(row.route_desc),
+              intOrNull(row.route_type),
+              nullIfEmpty(row.route_url),
+              nullIfEmpty(row.route_color),
+              nullIfEmpty(row.route_text_color),
+              intOrNull(row.route_sort_order),
+              intOrNull(row.continuous_pickup),
+              intOrNull(row.continuous_drop_off),
+              nullIfEmpty(row.network_id),
+            ),
+          );
 
-        const map: Record<string, number> = {};
-        if (stmts.length) {
-          const results = await batchExecute(this.env.gtfs_data, stmts);
-          routeRows.forEach((row, i) => {
-            const pk =
-              (results[i].results?.[0] as any)?.route_pk ||
-              results[i].meta.last_row_id;
-            if (pk) map[row.route_id] = pk;
-          });
-        }
-        return map;
-      },
-    );
+          const map: Record<string, number> = {};
+          if (stmts.length) {
+            const results = await batchExecute(this.env.gtfs_data, stmts);
+            routeRows.forEach((row, i) => {
+              const pk =
+                (results[i].results?.[0] as any)?.route_pk ||
+                results[i].meta.last_row_id;
+              if (pk) map[row.route_id] = pk;
+            });
+          }
+          return map;
+        },
+      );
+    }
 
     const stopsKey = `${prefix}/${GTFS_FILE_NAMES.stops.toLowerCase()}`;
     const stopsObj = await this.env.gtfs_processing.head(stopsKey);
@@ -548,7 +542,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
     const stopMap: Record<string, number> = {};
     const parentAssignments: Array<{ childPk: number; parentId: string }> = [];
 
-    if (stopsSize > 0) {
+    if (isNewVersion && stopsSize > 0) {
       let offset = 0;
       const CHUNK_SIZE = 512 * 1024; // 512KB
       let chunkIndex = 0;
@@ -716,7 +710,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       }
     }
 
-    if (parentAssignments.length) {
+    if (isNewVersion && parentAssignments.length) {
       await step.do(
         `[Import511] Update parent stations for ${operatorId}`,
         async () => {
@@ -740,10 +734,13 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       );
     }
 
-    await step.do(`[Import511] Import calendar for ${operatorId}`, async () => {
-      const calRows = await getFileRows("calendar");
-      const stmt = this.env.gtfs_data.prepare(
-        `
+    if (isNewVersion) {
+      await step.do(
+        `[Import511] Import calendar for ${operatorId}`,
+        async () => {
+          const calRows = await getFileRows("calendar");
+          const stmt = this.env.gtfs_data.prepare(
+            `
         INSERT INTO calendar (
           feed_version_id, service_id, monday, tuesday, wednesday, thursday,
           friday, saturday, sunday, start_date, end_date
@@ -759,59 +756,63 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           start_date = excluded.start_date,
           end_date = excluded.end_date
       `,
-      );
+          );
 
-      const stmts = calRows.map((row) =>
-        stmt.bind(
-          feedVersionId,
-          row.service_id,
-          intOrNull(row.monday),
-          intOrNull(row.tuesday),
-          intOrNull(row.wednesday),
-          intOrNull(row.thursday),
-          intOrNull(row.friday),
-          intOrNull(row.saturday),
-          intOrNull(row.sunday),
-          nullIfEmpty(row.start_date),
-          nullIfEmpty(row.end_date),
-        ),
+          const stmts = calRows.map((row) =>
+            stmt.bind(
+              feedVersionId,
+              row.service_id,
+              intOrNull(row.monday),
+              intOrNull(row.tuesday),
+              intOrNull(row.wednesday),
+              intOrNull(row.thursday),
+              intOrNull(row.friday),
+              intOrNull(row.saturday),
+              intOrNull(row.sunday),
+              nullIfEmpty(row.start_date),
+              nullIfEmpty(row.end_date),
+            ),
+          );
+          if (stmts.length) {
+            await batchExecute(this.env.gtfs_data, stmts);
+          }
+        },
       );
-      if (stmts.length) {
-        await batchExecute(this.env.gtfs_data, stmts);
-      }
-    });
+    }
 
-    await step.do(
-      `[Import511] Import calendar_dates for ${operatorId}`,
-      async () => {
-        const calDateRows = await getFileRows("calendar_dates");
-        const stmt = this.env.gtfs_data.prepare(
-          `
+    if (isNewVersion) {
+      await step.do(
+        `[Import511] Import calendar_dates for ${operatorId}`,
+        async () => {
+          const calDateRows = await getFileRows("calendar_dates");
+          const stmt = this.env.gtfs_data.prepare(
+            `
         INSERT INTO calendar_dates (
           feed_version_id, service_id, date, exception_type
         ) VALUES (?, ?, ?, ?)
       `,
-        );
-        const stmts = calDateRows.map((row) =>
-          stmt.bind(
-            feedVersionId,
-            row.service_id,
-            nullIfEmpty(row.date),
-            intOrNull(row.exception_type),
-          ),
-        );
-        if (stmts.length) {
-          await batchExecute(this.env.gtfs_data, stmts);
-        }
-      },
-    );
+          );
+          const stmts = calDateRows.map((row) =>
+            stmt.bind(
+              feedVersionId,
+              row.service_id,
+              nullIfEmpty(row.date),
+              intOrNull(row.exception_type),
+            ),
+          );
+          if (stmts.length) {
+            await batchExecute(this.env.gtfs_data, stmts);
+          }
+        },
+      );
+    }
 
     const tripsKey = `${prefix}/${GTFS_FILE_NAMES.trips.toLowerCase()}`;
     const tripsObj = await this.env.gtfs_processing.head(tripsKey);
     const tripsSize = tripsObj?.size ?? 0;
     const tripMap: Record<string, number> = {};
 
-    if (tripsSize > 0) {
+    if (isNewVersion && tripsSize > 0) {
       let offset = 0;
       const CHUNK_SIZE = 512 * 1024; // 512KB
       let chunkIndex = 0;
@@ -958,7 +959,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
     const stopTimesObj = await this.env.gtfs_processing.head(stopTimesKey);
     const stopTimesSize = stopTimesObj?.size ?? 0;
 
-    if (stopTimesSize > 0) {
+    if (isNewVersion && stopTimesSize > 0) {
       let offset = 0;
       const CHUNK_SIZE = 256 * 1024; // 256KB
       let chunkIndex = 0;
@@ -1097,7 +1098,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
     const shapesObj = await this.env.gtfs_processing.head(shapesKey);
     const shapesSize = shapesObj?.size ?? 0;
 
-    if (shapesSize > 0) {
+    if (isNewVersion && shapesSize > 0) {
       let offset = 0;
       const CHUNK_SIZE = 256 * 1024; // 256KB
       let chunkIndex = 0;
@@ -1211,12 +1212,13 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       }
     }
 
-    await step.do(
-      `[Import511] Import fare_attributes for ${operatorId}`,
-      async () => {
-        const fareAttrRows = await getFileRows("fare_attributes");
-        const stmt = this.env.gtfs_data.prepare(
-          `
+    if (isNewVersion) {
+      await step.do(
+        `[Import511] Import fare_attributes for ${operatorId}`,
+        async () => {
+          const fareAttrRows = await getFileRows("fare_attributes");
+          const stmt = this.env.gtfs_data.prepare(
+            `
           INSERT INTO fare_attributes (
             feed_version_id, fare_id, price, currency_type, payment_method,
             transfers, agency_pk, transfer_duration
@@ -1229,117 +1231,124 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             agency_pk = excluded.agency_pk,
             transfer_duration = excluded.transfer_duration
         `,
-        );
+          );
 
-        const stmts = fareAttrRows.map((row) =>
-          stmt.bind(
-            feedVersionId,
-            row.fare_id,
-            floatOrNull(row.price),
-            nullIfEmpty(row.currency_type),
-            intOrNull(row.payment_method),
-            intOrNull(row.transfers),
-            agencyMap[row.agency_id || ""] ?? null,
-            intOrNull(row.transfer_duration),
-          ),
-        );
-        if (stmts.length) {
-          await batchExecute(this.env.gtfs_data, stmts);
-        }
-      },
-    );
+          const stmts = fareAttrRows.map((row) =>
+            stmt.bind(
+              feedVersionId,
+              row.fare_id,
+              floatOrNull(row.price),
+              nullIfEmpty(row.currency_type),
+              intOrNull(row.payment_method),
+              intOrNull(row.transfers),
+              agencyMap[row.agency_id || ""] ?? null,
+              intOrNull(row.transfer_duration),
+            ),
+          );
+          if (stmts.length) {
+            await batchExecute(this.env.gtfs_data, stmts);
+          }
+        },
+      );
+    }
 
-    await step.do(
-      `[Import511] Import fare_rules for ${operatorId}`,
-      async () => {
-        const fareRuleRows = await getFileRows("fare_rules");
-        const stmt = this.env.gtfs_data.prepare(
-          `
+    if (isNewVersion) {
+      await step.do(
+        `[Import511] Import fare_rules for ${operatorId}`,
+        async () => {
+          const fareRuleRows = await getFileRows("fare_rules");
+          const stmt = this.env.gtfs_data.prepare(
+            `
           INSERT INTO fare_rules (
             feed_version_id, fare_id, route_id, origin_id, destination_id, contains_id
           ) VALUES (?, ?, ?, ?, ?, ?)
         `,
-        );
-        const stmts = fareRuleRows.map((row) =>
-          stmt.bind(
-            feedVersionId,
-            row.fare_id,
-            nullIfEmpty(row.route_id),
-            nullIfEmpty(row.origin_id),
-            nullIfEmpty(row.destination_id),
-            nullIfEmpty(row.contains_id),
-          ),
-        );
-        if (stmts.length) {
-          await batchExecute(this.env.gtfs_data, stmts);
-        }
-      },
-    );
+          );
+          const stmts = fareRuleRows.map((row) =>
+            stmt.bind(
+              feedVersionId,
+              row.fare_id,
+              nullIfEmpty(row.route_id),
+              nullIfEmpty(row.origin_id),
+              nullIfEmpty(row.destination_id),
+              nullIfEmpty(row.contains_id),
+            ),
+          );
+          if (stmts.length) {
+            await batchExecute(this.env.gtfs_data, stmts);
+          }
+        },
+      );
+    }
 
-    await step.do(
-      `[Import511] Import transfers for ${operatorId}`,
-      async () => {
-        const transferRows = await getFileRows("transfers");
-        const stmt = this.env.gtfs_data.prepare(
-          `
+    if (isNewVersion) {
+      await step.do(
+        `[Import511] Import transfers for ${operatorId}`,
+        async () => {
+          const transferRows = await getFileRows("transfers");
+          const stmt = this.env.gtfs_data.prepare(
+            `
           INSERT INTO transfers (
             feed_version_id, from_stop_pk, to_stop_pk, transfer_type, min_transfer_time
           ) VALUES (?, ?, ?, ?, ?)
         `,
-        );
-
-        const stmts: D1PreparedStatement[] = [];
-        for (const row of transferRows) {
-          const fromStopPk = stopMap[row.from_stop_id];
-          const toStopPk = stopMap[row.to_stop_id];
-          if (!fromStopPk || !toStopPk) continue;
-          stmts.push(
-            stmt.bind(
-              feedVersionId,
-              fromStopPk,
-              toStopPk,
-              intOrNull(row.transfer_type),
-              intOrNull(row.min_transfer_time),
-            ),
           );
-        }
-        if (stmts.length) {
-          await batchExecute(this.env.gtfs_data, stmts);
-        }
-      },
-    );
 
-    await step.do(
-      `[Import511] Import frequencies for ${operatorId}`,
-      async () => {
-        const freqRows = await getFileRows("frequencies");
-        const stmt = this.env.gtfs_data.prepare(
-          `
+          const stmts: D1PreparedStatement[] = [];
+          for (const row of transferRows) {
+            const fromStopPk = stopMap[row.from_stop_id];
+            const toStopPk = stopMap[row.to_stop_id];
+            if (!fromStopPk || !toStopPk) continue;
+            stmts.push(
+              stmt.bind(
+                feedVersionId,
+                fromStopPk,
+                toStopPk,
+                intOrNull(row.transfer_type),
+                intOrNull(row.min_transfer_time),
+              ),
+            );
+          }
+          if (stmts.length) {
+            await batchExecute(this.env.gtfs_data, stmts);
+          }
+        },
+      );
+    }
+
+    if (isNewVersion) {
+      await step.do(
+        `[Import511] Import frequencies for ${operatorId}`,
+        async () => {
+          const freqRows = await getFileRows("frequencies");
+          const stmt = this.env.gtfs_data.prepare(
+            `
           INSERT INTO frequencies (
             trip_pk, start_time, end_time, headway_secs, exact_times
           ) VALUES (?, ?, ?, ?, ?)
         `,
-        );
-
-        const stmts: D1PreparedStatement[] = [];
-        for (const row of freqRows) {
-          const tripPk = tripMap[row.trip_id];
-          if (!tripPk) continue;
-          stmts.push(
-            stmt.bind(
-              tripPk,
-              nullIfEmpty(row.start_time),
-              nullIfEmpty(row.end_time),
-              intOrNull(row.headway_secs),
-              intOrNull(row.exact_times),
-            ),
           );
-        }
-        if (stmts.length) {
-          await batchExecute(this.env.gtfs_data, stmts);
-        }
-      },
-    );
+
+          const stmts: D1PreparedStatement[] = [];
+          for (const row of freqRows) {
+            const tripPk = tripMap[row.trip_id];
+            if (!tripPk) continue;
+            stmts.push(
+              stmt.bind(
+                tripPk,
+                nullIfEmpty(row.start_time),
+                nullIfEmpty(row.end_time),
+                intOrNull(row.headway_secs),
+                intOrNull(row.exact_times),
+              ),
+            );
+          }
+          if (stmts.length) {
+            await batchExecute(this.env.gtfs_data, stmts);
+          }
+        },
+      );
+    }
 
     await step.do(`[Import511] Cleanup R2 for ${operatorId}`, async () => {
       const listed = await this.env.gtfs_processing.list({

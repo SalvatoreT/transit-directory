@@ -34,6 +34,46 @@ export class ImportServiceAlertsWorkflow extends WorkflowEntrypoint<
         agency,
       );
 
+      // Handle missing alerts: Close them by setting end_time to now
+      const currentAlertIds = new Set<string>();
+      for (const entity of message.entity) {
+        if (entity.alert && entity.id) {
+          currentAlertIds.add(entity.id);
+        }
+      }
+
+      const now = new Date().toISOString();
+      // Fetch active alerts from DB
+      const activeAlerts = await this.env.gtfs_data
+        .prepare(
+          `SELECT alert_pk, alert_id FROM service_alerts 
+           WHERE feed_source_id = ? AND (end_time IS NULL OR end_time > ?)`,
+        )
+        .bind(feedSourceId, now)
+        .all<{ alert_pk: number; alert_id: string }>();
+
+      const alertsToClose: number[] = [];
+      if (activeAlerts.results) {
+        for (const row of activeAlerts.results) {
+          if (row.alert_id && !currentAlertIds.has(row.alert_id)) {
+            alertsToClose.push(row.alert_pk);
+          }
+        }
+      }
+
+      if (alertsToClose.length > 0) {
+        console.log(`Closing ${alertsToClose.length} missing service alerts.`);
+        const closeStmt = this.env.gtfs_data.prepare(
+          "UPDATE service_alerts SET end_time = ? WHERE alert_pk = ?",
+        );
+        const closeBatch = alertsToClose.map((pk) => closeStmt.bind(now, pk));
+
+        const BATCH_SIZE = 50;
+        for (let i = 0; i < closeBatch.length; i += BATCH_SIZE) {
+          await this.env.gtfs_data.batch(closeBatch.slice(i, i + BATCH_SIZE));
+        }
+      }
+
       // Pre-fetch lookups if we want to resolve route/stop/trip PKs
       // Service alerts can refer to routeId, stopId, tripId.
       const routeIds: string[] = [];
@@ -120,10 +160,7 @@ export class ImportServiceAlertsWorkflow extends WorkflowEntrypoint<
       // GTFS-RT Service Alerts is usually a snapshot of ALL active alerts.
       // So clearing previous alerts for this source is a reasonable strategy to avoid stale alerts.
 
-      await this.env.gtfs_data
-        .prepare("DELETE FROM service_alerts WHERE feed_source_id = ?")
-        .bind(feedSourceId)
-        .run();
+      // Removed DELETE to keep history as requested.
 
       const stmt = this.env.gtfs_data.prepare(`
             INSERT INTO service_alerts (

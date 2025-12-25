@@ -3,7 +3,6 @@ import {
   type WorkflowEvent,
   WorkflowStep,
 } from "cloudflare:workers";
-import { transit_realtime } from "./gtfs-realtime";
 import {
   fetchAndDecodeFeed,
   getFeedContext,
@@ -97,16 +96,6 @@ export class ImportVehiclePositionsWorkflow extends WorkflowEntrypoint<
                 latitude, longitude, speed, heading, timestamp, 
                 current_status, occupancy_status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(feed_source_id, vehicle_id) DO UPDATE SET
-                trip_pk = excluded.trip_pk,
-                route_pk = excluded.route_pk,
-                latitude = excluded.latitude,
-                longitude = excluded.longitude,
-                speed = excluded.speed,
-                heading = excluded.heading,
-                timestamp = excluded.timestamp,
-                current_status = excluded.current_status,
-                occupancy_status = excluded.occupancy_status
         `);
 
       const batch = [];
