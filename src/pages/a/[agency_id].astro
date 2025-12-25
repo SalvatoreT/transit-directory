@@ -1,0 +1,342 @@
+---
+export const prerender = false;
+
+import Layout from "../../layouts/Layout.astro";
+
+const { agency_id } = Astro.params;
+// @ts-expect-error TypeScript doesn't know about Astro.locals.runtime
+const db = Astro.locals.runtime.env.gtfs_data as D1Database;
+
+if (!agency_id) {
+  return Astro.redirect("/404");
+}
+
+// 1. Get Agency and Active Feed Version
+const agencyResult = await db
+  .prepare(
+    `
+    SELECT
+        a.agency_name,
+        a.agency_pk,
+        fv.feed_version_id
+    FROM feed_version fv
+    JOIN feed_source fs ON fv.feed_source_id = fs.feed_source_id
+    JOIN agency a ON a.feed_version_id = fv.feed_version_id
+    WHERE (a.agency_id = ? OR fs.source_name = ?) AND fv.is_active = 1
+`,
+  )
+  .bind(agency_id, agency_id)
+  .first<{ agency_name: string; agency_pk: number; feed_version_id: number }>();
+
+if (!agencyResult) {
+  return new Response(`Agency not found: ${agency_id}`, { status: 404 });
+}
+
+const { agency_name, feed_version_id } = agencyResult;
+
+interface Stop {
+  stop_pk: number;
+  stop_id: string;
+  stop_name: string;
+  stop_lat: number;
+  stop_lon: number;
+}
+
+// 2. Get Stops (Limit 50 for performance for now)
+const stopsResult = await db
+  .prepare(
+    `
+    SELECT stop_pk, stop_id, stop_name, stop_lat, stop_lon
+    FROM stops
+    WHERE feed_version_id = ?
+    ORDER BY stop_name
+    LIMIT 50
+`,
+  )
+  .bind(feed_version_id)
+  .all<Stop>();
+
+const stops = stopsResult.results;
+const stopPks = stops.map((s) => s.stop_pk);
+
+interface Departure {
+  stop_pk: number;
+  stop_id: string;
+  route_short_name: string | null;
+  route_long_name: string | null;
+  route_color: string | null;
+  route_text_color: string | null;
+  trip_headsign: string | null;
+  departure_time: string;
+  delay: number | null;
+  realtime_status: string | null;
+}
+
+// 3. Get Upcoming Departures for these stops
+// Current time calculation
+const now = new Date();
+const pad = (n: number) => n.toString().padStart(2, "0");
+const currentTimeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+const twoHoursLater = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+const endTimeStr = `${pad(twoHoursLater.getHours())}:${pad(twoHoursLater.getMinutes())}:${pad(twoHoursLater.getSeconds())}`;
+const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`; // YYYYMMDD
+const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, ...
+
+// Map day of week to column name
+const days = [
+  "sunday",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+];
+const todayColumn = days[dayOfWeek];
+
+// Query
+let departures: Departure[] = [];
+if (stopPks.length > 0) {
+  const placeholders = stopPks.map(() => "?").join(",");
+
+  // Complex query to get departures with calendar checks
+  const query = `
+        SELECT
+            s.stop_pk,
+            s.stop_id,
+            r.route_short_name,
+            r.route_long_name,
+            r.route_color,
+            r.route_text_color,
+            t.trip_headsign,
+            st.departure_time,
+            tu.delay,
+            tu.status as realtime_status
+        FROM stop_times st
+        JOIN stops s ON st.stop_pk = s.stop_pk
+        JOIN trips t ON st.trip_pk = t.trip_pk
+        JOIN routes r ON t.route_pk = r.route_pk
+        LEFT JOIN trip_updates tu ON tu.trip_pk = t.trip_pk
+        WHERE s.feed_version_id = ?
+          AND s.stop_pk IN (${placeholders})
+          AND st.departure_time >= ?
+          AND st.departure_time <= ?
+          AND (
+            EXISTS (
+                SELECT 1 FROM calendar c
+                WHERE c.feed_version_id = s.feed_version_id
+                  AND c.service_id = t.service_id
+                  AND c.start_date <= ?
+                  AND c.end_date >= ?
+                  AND c.${todayColumn} = 1
+            )
+            OR EXISTS (
+                SELECT 1 FROM calendar_dates cd
+                WHERE cd.feed_version_id = s.feed_version_id
+                  AND cd.service_id = t.service_id
+                  AND cd.date = ?
+                  AND cd.exception_type = 1
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM calendar_dates cd
+            WHERE cd.feed_version_id = s.feed_version_id
+              AND cd.service_id = t.service_id
+              AND cd.date = ?
+              AND cd.exception_type = 2
+          )
+        ORDER BY st.departure_time ASC
+    `;
+
+  // Bind parameters: feed_version_id, ...stopPks, currentTimeStr, endTimeStr, dateStr, dateStr, dateStr, dateStr
+  // Note: D1 bind order must match ? appearance
+  const result = await db
+    .prepare(query)
+    .bind(
+      feed_version_id,
+      ...stopPks,
+      currentTimeStr,
+      endTimeStr,
+      dateStr, // calendar start
+      dateStr, // calendar end
+      dateStr, // calendar_dates added
+      dateStr, // calendar_dates removed
+    )
+    .all<Departure>();
+
+  departures = result.results;
+}
+
+// Group departures by stop
+const stopsWithDepartures = stops.map((stop) => {
+  const stopDepartures = departures.filter((d) => d.stop_pk === stop.stop_pk);
+  return {
+    ...stop,
+    departures: stopDepartures,
+  };
+});
+---
+
+<Layout>
+  <main>
+    <h1>{agency_name} <span class="agency-id">({agency_id})</span></h1>
+    <p class="subtitle">Realtime Arrivals</p>
+
+    <div class="stops-grid">
+      {
+        stopsWithDepartures.map((stop) => (
+          <div class="stop-card">
+            <h2>{stop.stop_name}</h2>
+            <div class="departures-list">
+              {stop.departures.length > 0 ? (
+                stop.departures.map((dep) => {
+                  const routeColor = dep.route_color
+                    ? `#${dep.route_color}`
+                    : "#eee";
+                  const routeTextColor = dep.route_text_color
+                    ? `#${dep.route_text_color}`
+                    : "#000";
+
+                  // Format time
+                  // dep.departure_time is HH:MM:SS. Add delay if present.
+                  // Simple formatting for now.
+                  let timeDisplay = dep.departure_time.substring(0, 5); // HH:MM
+                  let statusClass = "scheduled";
+
+                  if (dep.delay != null) {
+                    const delayMin = Math.round(dep.delay / 60);
+                    if (delayMin > 0) {
+                      timeDisplay += ` (+${delayMin} min)`;
+                      statusClass = "delayed";
+                    } else if (delayMin < 0) {
+                      timeDisplay += ` (${delayMin} min)`;
+                      statusClass = "early";
+                    } else {
+                      statusClass = "on-time";
+                    }
+                  }
+
+                  return (
+                    <div class="departure-row">
+                      <span
+                        class="route-badge"
+                        style={`background-color: ${routeColor}; color: ${routeTextColor}`}
+                      >
+                        {dep.route_short_name || dep.route_long_name}
+                      </span>
+                      <span class="headsign">{dep.trip_headsign}</span>
+                      <span class={`time ${statusClass}`}>{timeDisplay}</span>
+                    </div>
+                  );
+                })
+              ) : (
+                <div class="no-departures">
+                  No upcoming departures in the next 2 hours.
+                </div>
+              )}
+            </div>
+          </div>
+        ))
+      }
+    </div>
+  </main>
+</Layout>
+
+<style>
+  main {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem;
+    font-family: system-ui, sans-serif;
+  }
+
+  h1 {
+    font-size: 2.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .agency-id {
+    color: #666;
+    font-size: 1.5rem;
+    font-weight: normal;
+  }
+
+  .subtitle {
+    color: #666;
+    margin-bottom: 2rem;
+  }
+
+  .stops-grid {
+    display: grid;
+    gap: 1.5rem;
+  }
+
+  .stop-card {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 1.5rem;
+    background: #fff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  }
+
+  .stop-card h2 {
+    margin: 0 0 1rem 0;
+    font-size: 1.25rem;
+  }
+
+  .departures-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .departure-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid #eee;
+  }
+
+  .departure-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+
+  .route-badge {
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-weight: bold;
+    min-width: 3rem;
+    text-align: center;
+    font-size: 0.9rem;
+  }
+
+  .headsign {
+    flex: 1;
+    font-weight: 500;
+  }
+
+  .time {
+    font-variant-numeric: tabular-nums;
+    font-weight: bold;
+  }
+
+  .delayed {
+    color: #d32f2f;
+  }
+  .early {
+    color: #388e3c;
+  }
+  .on-time {
+    color: #388e3c;
+  }
+  .scheduled {
+    color: #555;
+  }
+
+  .no-departures {
+    color: #888;
+    font-style: italic;
+  }
+</style>
