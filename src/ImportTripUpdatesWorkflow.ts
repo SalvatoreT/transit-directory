@@ -80,10 +80,9 @@ export class ImportTripUpdatesWorkflow extends WorkflowEntrypoint<
         `);
 
       const batch = [];
-      const timestamp = new Date(
-        ((message.header.timestamp as any as number) || Date.now() / 1000) *
-          1000,
-      ).toISOString();
+      const timestamp =
+        (message.header.timestamp as unknown as number) ||
+        Math.floor(Date.now() / 1000);
 
       for (const entity of message.entity) {
         if (!entity.tripUpdate) continue;

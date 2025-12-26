@@ -42,7 +42,9 @@ export class ImportServiceAlertsWorkflow extends WorkflowEntrypoint<
         }
       }
 
-      const now = new Date().toISOString();
+      // Use Unix timestamp (seconds)
+      const now = Math.floor(Date.now() / 1000);
+
       // Fetch active alerts from DB
       const activeAlerts = await this.env.gtfs_data
         .prepare(
@@ -151,17 +153,6 @@ export class ImportServiceAlertsWorkflow extends WorkflowEntrypoint<
         }
       }
 
-      // Before inserting new alerts, we might want to clear old ones for this source?
-      // Or upsert? Schema has auto-increment PK.
-      // Service alerts usually have an ID.
-      // If we want to avoid duplicates over time, we need to track active alerts.
-      // For this implementation, I will just insert everything found in the current feed.
-      // ideally, we should maybe DELETE FROM service_alerts WHERE feed_source_id = ? before inserting current snapshot?
-      // GTFS-RT Service Alerts is usually a snapshot of ALL active alerts.
-      // So clearing previous alerts for this source is a reasonable strategy to avoid stale alerts.
-
-      // Removed DELETE to keep history as requested.
-
       const stmt = this.env.gtfs_data.prepare(`
             INSERT INTO service_alerts (
                 feed_source_id, alert_id, header, description, cause, effect, 
@@ -174,11 +165,10 @@ export class ImportServiceAlertsWorkflow extends WorkflowEntrypoint<
 
       for (const entity of message.entity) {
         if (!entity.alert) continue;
-        const alertId = entity.id; // Entity ID is typically the alert ID or we check alert.id? Proto definition: FeedEntity has id, Alert message doesn't have separate id usually.
+        const alertId = entity.id;
 
         const a = entity.alert;
 
-        // Helper to get translated text (defaults to first translation or empty)
         const getText = (ts?: transit_realtime.ITranslatedString | null) => {
           if (!ts || !ts.translation || ts.translation.length === 0)
             return null;
@@ -189,32 +179,18 @@ export class ImportServiceAlertsWorkflow extends WorkflowEntrypoint<
         const description = getText(a.descriptionText);
 
         // Time range: use the first active period if available
-        let startTime: string | null = null;
-        let endTime: string | null = null;
+        let startTime: number | null = null;
+        let endTime: number | null = null;
         if (a.activePeriod && a.activePeriod.length > 0) {
           const p = a.activePeriod[0];
-          if (p.start)
-            startTime = new Date(
-              (p.start as any as number) * 1000,
-            ).toISOString();
-          if (p.end)
-            endTime = new Date((p.end as any as number) * 1000).toISOString();
+          if (p.start) startTime = Math.floor(Number(p.start));
+          if (p.end) endTime = Math.floor(Number(p.end));
         }
-
-        // Enums
-        // Cause: 1=UNKNOWN_CAUSE, etc.
-        // Effect: 1=NO_SERVICE, etc.
-        // Severity: not standard in basic proto but checking extensions?
-        // 511.org might use standard fields. I'll just store enum integers or map if I knew mappings.
-        // Schema has TEXT. I will store simple text representation or stringified number.
 
         const cause = a.cause ? String(a.cause) : null;
         const effect = a.effect ? String(a.effect) : null;
         const severity = a.severityLevel ? String(a.severityLevel) : null;
 
-        // Informed entities
-        // If empty, insert one row with nulls? Or skip?
-        // Usually global alert if no entities.
         const entities =
           a.informedEntity && a.informedEntity.length > 0
             ? a.informedEntity
