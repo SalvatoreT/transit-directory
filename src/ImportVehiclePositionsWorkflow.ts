@@ -145,8 +145,8 @@ export class ImportVehiclePositionsWorkflow extends WorkflowEntrypoint<
         }
 
         const timestamp = v.timestamp
-          ? new Date((v.timestamp as any as number) * 1000).toISOString()
-          : new Date().toISOString();
+          ? Math.floor(Number(v.timestamp))
+          : Math.floor(Date.now() / 1000);
 
         batch.push(
           stmt.bind(

@@ -13,9 +13,9 @@ CREATE TABLE IF NOT EXISTS feed_version (
     feed_version_id   INTEGER PRIMARY KEY AUTOINCREMENT,
     feed_source_id    INTEGER NOT NULL REFERENCES feed_source(feed_source_id),
     version_label     TEXT,
-    date_added        TEXT NOT NULL DEFAULT (DATE('now')),
-    feed_start_date   TEXT,
-    feed_end_date     TEXT,
+    date_added        INTEGER NOT NULL DEFAULT (unixepoch()),
+    feed_start_date   INTEGER,
+    feed_end_date     INTEGER,
     is_active         INTEGER NOT NULL DEFAULT 0,
     UNIQUE(feed_source_id, version_label)
 );
@@ -40,8 +40,8 @@ CREATE TABLE IF NOT EXISTS feed_info (
     feed_publisher_url    TEXT,
     feed_lang             TEXT,
     feed_version          TEXT,
-    feed_start_date       TEXT,
-    feed_end_date         TEXT,
+    feed_start_date       INTEGER,
+    feed_end_date         INTEGER,
     feed_contact_email    TEXT,
     feed_contact_url      TEXT
 );
@@ -106,8 +106,8 @@ CREATE TABLE IF NOT EXISTS calendar (
     friday          INTEGER NOT NULL,
     saturday        INTEGER NOT NULL,
     sunday          INTEGER NOT NULL,
-    start_date      TEXT NOT NULL,
-    end_date        TEXT NOT NULL,
+    start_date      INTEGER NOT NULL,
+    end_date        INTEGER NOT NULL,
     UNIQUE(feed_version_id, service_id)
 );
 
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS calendar_dates (
     caldate_pk      INTEGER PRIMARY KEY AUTOINCREMENT,
     feed_version_id INTEGER NOT NULL REFERENCES feed_version(feed_version_id),
     service_id      TEXT NOT NULL,
-    date            TEXT NOT NULL,
+    date            INTEGER NOT NULL,
     exception_type  INTEGER NOT NULL
 );
 
@@ -149,8 +149,8 @@ CREATE TABLE IF NOT EXISTS stop_times (
     trip_pk          INTEGER NOT NULL REFERENCES trips(trip_pk),
     stop_pk          INTEGER NOT NULL REFERENCES stops(stop_pk),
     stop_sequence    INTEGER NOT NULL,
-    arrival_time     TEXT,
-    departure_time   TEXT,
+    arrival_time     INTEGER,
+    departure_time   INTEGER,
     stop_headsign    TEXT,
     pickup_type      INTEGER,
     drop_off_type    INTEGER,
@@ -215,8 +215,8 @@ CREATE TABLE IF NOT EXISTS transfers (
 CREATE TABLE IF NOT EXISTS frequencies (
     frequency_pk     INTEGER PRIMARY KEY AUTOINCREMENT,
     trip_pk          INTEGER NOT NULL REFERENCES trips(trip_pk),
-    start_time       TEXT NOT NULL,
-    end_time         TEXT NOT NULL,
+    start_time       INTEGER NOT NULL,
+    end_time         INTEGER NOT NULL,
     headway_secs     INTEGER NOT NULL,
     exact_times      INTEGER
 );
@@ -274,7 +274,7 @@ CREATE TABLE IF NOT EXISTS vehicle_positions (
     longitude        REAL,
     speed            REAL,
     heading          REAL,
-    timestamp        TEXT NOT NULL,
+    timestamp        INTEGER NOT NULL,
     current_status   TEXT,
     occupancy_status TEXT,
     PRIMARY KEY (feed_source_id, vehicle_id)
@@ -292,7 +292,7 @@ CREATE TABLE IF NOT EXISTS trip_updates (
     trip_pk          INTEGER REFERENCES trips(trip_pk),
     delay            INTEGER,
     status           TEXT,
-    updated_time     TEXT NOT NULL,
+    updated_time     INTEGER NOT NULL,
     PRIMARY KEY (feed_source_id, trip_id)
 );
 
@@ -304,8 +304,8 @@ CREATE TABLE IF NOT EXISTS service_alerts (
     description      TEXT,
     cause            TEXT,
     effect           TEXT,
-    start_time       TEXT,
-    end_time         TEXT,
+    start_time       INTEGER,
+    end_time         INTEGER,
     severity_level   TEXT,
     affected_route_pk   INTEGER REFERENCES routes(route_pk),
     affected_stop_pk    INTEGER REFERENCES stops(stop_pk),

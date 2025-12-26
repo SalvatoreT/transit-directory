@@ -4,6 +4,7 @@ import {
   WorkflowStep,
 } from "cloudflare:workers";
 import JSZip from "jszip";
+import { DateTime } from "luxon";
 
 interface Env {
   gtfs_data: D1Database;
@@ -113,6 +114,33 @@ function floatOrNull(value: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function parseGtfsDate(
+  dateStr: string | undefined | null,
+  timezone: string,
+): number | null {
+  if (!dateStr || dateStr.length !== 8) return null;
+  const year = parseInt(dateStr.substring(0, 4));
+  const month = parseInt(dateStr.substring(4, 6));
+  const day = parseInt(dateStr.substring(6, 8));
+
+  // Use noon to avoid DST edge cases when determining "day existence"
+  const dt = DateTime.fromObject(
+    { year, month, day, hour: 12 },
+    { zone: timezone },
+  );
+  return dt.isValid ? Math.floor(dt.toSeconds()) : null;
+}
+
+function parseGtfsTime(timeStr: string | undefined | null): number | null {
+  if (!timeStr) return null;
+  const parts = timeStr.split(":");
+  if (parts.length < 2) return null;
+  const h = parseInt(parts[0]);
+  const m = parseInt(parts[1]);
+  const s = parts.length > 2 ? parseInt(parts[2]) : 0;
+  return h * 3600 + m * 60 + s;
+}
+
 /**
  * Executes a large set of D1 prepared statements in smaller batches
  * to avoid RangeError (invalid string length) and other RPC limits.
@@ -196,190 +224,204 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       return parseCsv(content);
     };
 
-    const { feedVersionId, feedInfo, isNewVersion } = await step.do(
-      `[Import511] Initialize feed version for ${operatorId}`,
-      async () => {
-        const agencyRows = await getFileRows("agency");
-        const feedInfoRows = await getFileRows("feed_info");
-        const feedInfo = feedInfoRows[0] || null;
+    const { feedVersionId, feedInfo, isNewVersion, agencyTimezone } =
+      await step.do(
+        `[Import511] Initialize feed version for ${operatorId}`,
+        async () => {
+          const agencyRows = await getFileRows("agency");
+          const feedInfoRows = await getFileRows("feed_info");
+          const feedInfo = feedInfoRows[0] || null;
 
-        const sourceName = operatorId;
-        const sourceDesc = agencyRows[0]?.agency_name ?? sourceName;
-        const defaultLang =
-          feedInfo?.feed_lang ?? agencyRows[0]?.agency_lang ?? null;
+          const sourceName = operatorId;
+          const sourceDesc = agencyRows[0]?.agency_name ?? sourceName;
+          const defaultLang =
+            feedInfo?.feed_lang ?? agencyRows[0]?.agency_lang ?? null;
 
-        // Ensure feed source
-        await this.env.gtfs_data
-          .prepare(
-            `
+          const agencyTimezone = agencyRows[0]?.agency_timezone;
+          if (!agencyTimezone) {
+            throw new Error(`Agency timezone is missing for ${operatorId}`);
+          }
+
+          // Ensure feed source
+          await this.env.gtfs_data
+            .prepare(
+              `
             INSERT INTO feed_source (source_name, source_desc, default_lang)
             VALUES (?, ?, ?)
             ON CONFLICT(source_name) DO UPDATE SET
               source_desc = excluded.source_desc,
               default_lang = excluded.default_lang
           `,
-          )
-          .bind(sourceName, sourceDesc, defaultLang)
-          .run();
+            )
+            .bind(sourceName, sourceDesc, defaultLang)
+            .run();
 
-        const sourceRow = await this.env.gtfs_data
-          .prepare(
-            "SELECT feed_source_id FROM feed_source WHERE source_name = ?",
-          )
-          .bind(sourceName)
-          .first<{ feed_source_id: number }>();
+          const sourceRow = await this.env.gtfs_data
+            .prepare(
+              "SELECT feed_source_id FROM feed_source WHERE source_name = ?",
+            )
+            .bind(sourceName)
+            .first<{ feed_source_id: number }>();
 
-        if (!sourceRow) throw new Error("Failed to obtain feed_source_id");
-        const feedSourceId = sourceRow.feed_source_id;
+          if (!sourceRow) throw new Error("Failed to obtain feed_source_id");
+          const feedSourceId = sourceRow.feed_source_id;
 
-        // Try to insert the feed version based on content hash
-        const versionLabel = `511-${operatorId}-${hashHex}`;
-        const feedStartDate = nullIfEmpty(feedInfo?.feed_start_date);
-        const feedEndDate = nullIfEmpty(feedInfo?.feed_end_date);
+          // Try to insert the feed version based on content hash
+          const versionLabel = `511-${operatorId}-${hashHex}`;
+          const feedStartDate = parseGtfsDate(
+            feedInfo?.feed_start_date,
+            agencyTimezone,
+          );
+          const feedEndDate = parseGtfsDate(
+            feedInfo?.feed_end_date,
+            agencyTimezone,
+          );
 
-        const res = await this.env.gtfs_data
-          .prepare(
-            `
+          const res = await this.env.gtfs_data
+            .prepare(
+              `
             INSERT INTO feed_version (
               feed_source_id, version_label, date_added, feed_start_date, feed_end_date, is_active
-            ) VALUES (?, ?, DATE('now'), ?, ?, 1)
+            ) VALUES (?, ?, unixepoch(), ?, ?, 1)
             ON CONFLICT(feed_source_id, version_label) DO NOTHING
             RETURNING feed_version_id
           `,
-          )
-          .bind(feedSourceId, versionLabel, feedStartDate, feedEndDate)
-          .run();
-
-        let feedVersionId = res.results?.[0]?.feed_version_id as
-          | number
-          | undefined;
-        let isNewVersion = false;
-
-        if (feedVersionId) {
-          isNewVersion = true;
-        } else {
-          // Version already exists! Get ID
-          const existing = await this.env.gtfs_data
-            .prepare(
-              "SELECT feed_version_id FROM feed_version WHERE feed_source_id = ? AND version_label = ?",
             )
-            .bind(feedSourceId, versionLabel)
-            .first<{ feed_version_id: number }>();
+            .bind(feedSourceId, versionLabel, feedStartDate, feedEndDate)
+            .run();
 
-          if (!existing)
-            throw new Error("Failed to find existing feed_version_id");
-          feedVersionId = existing.feed_version_id;
+          let feedVersionId = res.results?.[0]?.feed_version_id as
+            | number
+            | undefined;
+          let isNewVersion = false;
 
-          // Ensure it is active
+          if (feedVersionId) {
+            isNewVersion = true;
+          } else {
+            // Version already exists! Get ID
+            const existing = await this.env.gtfs_data
+              .prepare(
+                "SELECT feed_version_id FROM feed_version WHERE feed_source_id = ? AND version_label = ?",
+              )
+              .bind(feedSourceId, versionLabel)
+              .first<{ feed_version_id: number }>();
+
+            if (!existing)
+              throw new Error("Failed to find existing feed_version_id");
+            feedVersionId = existing.feed_version_id;
+
+            // Ensure it is active
+            await this.env.gtfs_data
+              .prepare(
+                "UPDATE feed_version SET is_active = 1 WHERE feed_version_id = ?",
+              )
+              .bind(feedVersionId)
+              .run();
+          }
+
+          if (isNewVersion) {
+            await this.env.gtfs_data.batch([
+              // Clear realtime references first to avoid FK violations
+              this.env.gtfs_data
+                .prepare(
+                  "UPDATE trip_updates SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+                )
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare(
+                  "UPDATE vehicle_positions SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+                )
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare(
+                  "UPDATE vehicle_positions SET route_pk = NULL WHERE route_pk IN (SELECT route_pk FROM routes WHERE feed_version_id = ?)",
+                )
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare(
+                  "UPDATE service_alerts SET affected_trip_pk = NULL WHERE affected_trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+                )
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare(
+                  "UPDATE service_alerts SET affected_route_pk = NULL WHERE affected_route_pk IN (SELECT route_pk FROM routes WHERE feed_version_id = ?)",
+                )
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare(
+                  "UPDATE service_alerts SET affected_stop_pk = NULL WHERE affected_stop_pk IN (SELECT stop_pk FROM stops WHERE feed_version_id = ?)",
+                )
+                .bind(feedVersionId),
+
+              // Delete static data
+              this.env.gtfs_data
+                .prepare(
+                  "DELETE FROM stop_times WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+                )
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare(
+                  "DELETE FROM frequencies WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+                )
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM attributions WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM trips WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM transfers WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM pathways WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM stops WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare(
+                  "DELETE FROM fare_attributes WHERE feed_version_id = ?",
+                )
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM fare_rules WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM routes WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM agency WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM feed_info WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM calendar WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM calendar_dates WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM shapes WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+              this.env.gtfs_data
+                .prepare("DELETE FROM levels WHERE feed_version_id = ?")
+                .bind(feedVersionId),
+            ]);
+          }
+
+          // De-activate other versions for this source
           await this.env.gtfs_data
             .prepare(
-              "UPDATE feed_version SET is_active = 1 WHERE feed_version_id = ?",
+              "UPDATE feed_version SET is_active = 0 WHERE feed_source_id = ? AND feed_version_id != ?",
             )
-            .bind(feedVersionId)
+            .bind(feedSourceId, feedVersionId)
             .run();
-        }
 
-        if (isNewVersion) {
-          await this.env.gtfs_data.batch([
-            // Clear realtime references first to avoid FK violations
-            this.env.gtfs_data
-              .prepare(
-                "UPDATE trip_updates SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-              )
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare(
-                "UPDATE vehicle_positions SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-              )
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare(
-                "UPDATE vehicle_positions SET route_pk = NULL WHERE route_pk IN (SELECT route_pk FROM routes WHERE feed_version_id = ?)",
-              )
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare(
-                "UPDATE service_alerts SET affected_trip_pk = NULL WHERE affected_trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-              )
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare(
-                "UPDATE service_alerts SET affected_route_pk = NULL WHERE affected_route_pk IN (SELECT route_pk FROM routes WHERE feed_version_id = ?)",
-              )
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare(
-                "UPDATE service_alerts SET affected_stop_pk = NULL WHERE affected_stop_pk IN (SELECT stop_pk FROM stops WHERE feed_version_id = ?)",
-              )
-              .bind(feedVersionId),
-
-            // Delete static data
-            this.env.gtfs_data
-              .prepare(
-                "DELETE FROM stop_times WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-              )
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare(
-                "DELETE FROM frequencies WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-              )
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM attributions WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM trips WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM transfers WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM pathways WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM stops WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM fare_attributes WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM fare_rules WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM routes WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM agency WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM feed_info WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM calendar WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM calendar_dates WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM shapes WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-            this.env.gtfs_data
-              .prepare("DELETE FROM levels WHERE feed_version_id = ?")
-              .bind(feedVersionId),
-          ]);
-        }
-
-        // De-activate other versions for this source
-        await this.env.gtfs_data
-          .prepare(
-            "UPDATE feed_version SET is_active = 0 WHERE feed_source_id = ? AND feed_version_id != ?",
-          )
-          .bind(feedSourceId, feedVersionId)
-          .run();
-
-        return { feedVersionId, feedInfo, isNewVersion };
-      },
-    );
+          return { feedVersionId, feedInfo, isNewVersion, agencyTimezone };
+        },
+      );
 
     if (isNewVersion && feedInfo) {
       await step.do(
@@ -409,8 +451,8 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
               nullIfEmpty(feedInfo.feed_publisher_url),
               nullIfEmpty(feedInfo.feed_lang),
               nullIfEmpty(feedInfo.feed_version),
-              nullIfEmpty(feedInfo.feed_start_date),
-              nullIfEmpty(feedInfo.feed_end_date),
+              parseGtfsDate(feedInfo.feed_start_date, agencyTimezone),
+              parseGtfsDate(feedInfo.feed_end_date, agencyTimezone),
               nullIfEmpty(feedInfo.feed_contact_email),
               nullIfEmpty(feedInfo.feed_contact_url),
             )
@@ -769,8 +811,8 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
               intOrNull(row.friday),
               intOrNull(row.saturday),
               intOrNull(row.sunday),
-              nullIfEmpty(row.start_date),
-              nullIfEmpty(row.end_date),
+              parseGtfsDate(row.start_date, agencyTimezone),
+              parseGtfsDate(row.end_date, agencyTimezone),
             ),
           );
           if (stmts.length) {
@@ -796,7 +838,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             stmt.bind(
               feedVersionId,
               row.service_id,
-              nullIfEmpty(row.date),
+              parseGtfsDate(row.date, agencyTimezone),
               intOrNull(row.exception_type),
             ),
           );
@@ -1055,8 +1097,8 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
                   tripPk,
                   stopPk,
                   intOrNull(row.stop_sequence),
-                  nullIfEmpty(row.arrival_time),
-                  nullIfEmpty(row.departure_time),
+                  parseGtfsTime(row.arrival_time),
+                  parseGtfsTime(row.departure_time),
                   nullIfEmpty(row.stop_headsign),
                   intOrNull(row.pickup_type),
                   intOrNull(row.drop_off_type),
@@ -1336,8 +1378,8 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
             stmts.push(
               stmt.bind(
                 tripPk,
-                nullIfEmpty(row.start_time),
-                nullIfEmpty(row.end_time),
+                parseGtfsTime(row.start_time),
+                parseGtfsTime(row.end_time),
                 intOrNull(row.headway_secs),
                 intOrNull(row.exact_times),
               ),
