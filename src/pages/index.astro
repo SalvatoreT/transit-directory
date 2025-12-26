@@ -1,11 +1,88 @@
 ---
-import Welcome from "../components/Welcome.astro";
+export const prerender = false;
+
 import Layout from "../layouts/Layout.astro";
 
-// Welcome to Astro! Wondering what to do next? Check out the Astro documentation at https://docs.astro.build
-// Don't want to use any of this? Delete everything in this file, the `assets`, `components`, and `layouts` directories, and start fresh.
+// @ts-expect-error TypeScript doesn't know about Astro.locals.runtime
+const db = Astro.locals.runtime.env.gtfs_data as D1Database;
+
+const agenciesResult = await db
+  .prepare(
+    `
+    SELECT a.agency_name, a.agency_id
+    FROM agency a
+    JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id
+    WHERE fv.is_active = 1
+    ORDER BY a.agency_name
+  `,
+  )
+  .all<{ agency_name: string; agency_id: string }>();
+
+const agencies = agenciesResult.results;
 ---
 
 <Layout>
-  <Welcome />
+  <main>
+    <h1>Transit Agencies</h1>
+    <ul class="agency-list">
+      {
+        agencies.map((agency) => (
+          <li>
+            <a href={`/a/${agency.agency_id}`}>{agency.agency_name}</a>
+          </li>
+        ))
+      }
+    </ul>
+    {
+      agencies.length === 0 && (
+        <p>No active agencies found. Please check back later.</p>
+      )
+    }
+  </main>
 </Layout>
+
+<style>
+  main {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem;
+    font-family: system-ui, sans-serif;
+  }
+
+  h1 {
+    font-size: 2.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .agency-list {
+    list-style: none;
+    padding: 0;
+    display: grid;
+    gap: 1rem;
+  }
+
+  .agency-list li {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+
+  .agency-list li:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  }
+
+  .agency-list a {
+    display: block;
+    padding: 1.5rem;
+    text-decoration: none;
+    color: #111827;
+    font-weight: 500;
+    font-size: 1.1rem;
+  }
+
+  .agency-list a:hover {
+    color: #3245ff;
+  }
+</style>

@@ -5,3 +5,4 @@
 - Package manager: Yarn 4 (Berry). Use `yarn` commands; PnP by default (though `node_modules/` may exist locally). Avoid `npm`/`pnpm`.
 - UI defaults: `Layout.astro` minimal HTML shell. `Welcome.astro` uses Inter/Roboto stack and blurred background image; styles are inline in component.
 - Worker: `src/worker.ts` wraps `@astrojs/cloudflare/handler`; keeps `@ts-expect-error` for request type mismatch; includes `scheduled` handler that logs cron time.
+- Git: Do NOT commit code unless explicitly instructed by the user.

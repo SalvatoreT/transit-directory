@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-- Source lives in `src/`: pages (`src/pages/index.astro`), shared layout (`src/layouts/Layout.astro`), components (`src/components/Welcome.astro`), worker entry (`src/worker.ts`), assets (`src/assets/`), and static files under `public/`.
+- Source lives in `src/`: pages (`src/pages/index.astro`), shared layout (`src/layouts/Layout.astro`), worker entry (`src/worker.ts`), assets (`src/assets/`), and static files under `public/`.
 - Tests go in `test/` and Vitest config in `vitest.config.ts`.
 - Build output is `dist/`; configuration lives at `astro.config.ts`, `tsconfig.json`, `.prettierrc`, and `wrangler.jsonc`.
 - GTFS schema/design notes are in `docs/gtfs-database.md`; `docs/gtfs-reference.md` is authoritative from GTFS (do not edit).
@@ -37,6 +37,7 @@
 
 ## Commit & Pull Request Guidelines
 
+- **IMPORTANT**: Do NOT commit code unless explicitly instructed to do so by the user.
 - Commit messages: short, imperative summaries (e.g., “add GTFS schema notes”, “fix worker cron logging”).
 - Pull requests: describe the change, link issues/tasks, note testing (`yarn test`, `yarn astro check`, `yarn build` when relevant), and include screenshots for UI changes if applicable.
 

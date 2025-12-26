@@ -1,7 +1,7 @@
 import {
   WorkflowEntrypoint,
   type WorkflowEvent,
-  WorkflowStep,
+  type WorkflowStep,
 } from "cloudflare:workers";
 import {
   fetchAndDecodeFeed,
