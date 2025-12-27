@@ -3,48 +3,28 @@ export const prerender = false;
 
 import Layout from "../../layouts/Layout.astro";
 import { DateTime } from "luxon";
+import { getLiveCollection, getLiveEntry } from "astro:content";
 
 const { agency_id } = Astro.params;
-// @ts-expect-error TypeScript doesn't know about Astro.locals.runtime
-const db = Astro.locals.runtime.env.gtfs_data as D1Database;
 
 if (!agency_id) {
   return Astro.redirect("/404");
 }
 
 // 1. Get Agency and Active Feed Version
-const agencyResult = await db
-  .prepare(
-    `
-    SELECT
-        a.agency_name,
-        a.agency_pk,
-        a.agency_timezone,
-        fv.feed_version_id
-    FROM feed_version fv
-    JOIN feed_source fs ON fv.feed_source_id = fs.feed_source_id
-    JOIN agency a ON a.feed_version_id = fv.feed_version_id
-    WHERE (a.agency_id = ? OR fs.source_name = ?) AND fv.is_active = 1
-`,
-  )
-  .bind(agency_id, agency_id)
-  .first<{
-    agency_name: string;
-    agency_pk: number;
-    agency_timezone: string;
-    feed_version_id: number;
-  }>();
+const { entry: agencyEntry, error: agencyError } = await getLiveEntry(
+  "agencies",
+  agency_id,
+);
 
-if (!agencyResult) {
+if (agencyError || !agencyEntry) {
   return new Response(`Agency not found: ${agency_id}`, { status: 404 });
 }
 
-const { agency_name, feed_version_id, agency_timezone } = agencyResult;
+const { agency_name, feed_version_id, agency_timezone } = agencyEntry.data;
 
 // Set up time context based on Agency Timezone
-// Default to LA if missing, but it should be there.
-const timezone = agency_timezone;
-const now = DateTime.now().setZone(timezone);
+const now = DateTime.now().setZone(agency_timezone);
 const midnight = now.startOf("day");
 const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
 const twoHoursLaterSeconds = currentSeconds + 2 * 60 * 60;
@@ -62,115 +42,43 @@ const days = [
 ];
 const todayColumn = days[now.weekday % 7];
 
-interface Stop {
-  stop_pk: number;
-  stop_id: string;
-  stop_name: string;
-  stop_lat: number;
-  stop_lon: number;
-  stop_timezone: string | null;
+// 2. Get Stops
+const { entries: stopsEntries, error: stopsError } = await getLiveCollection(
+  "stops",
+  { feed_version_id },
+);
+
+if (stopsError) {
+  console.error("Error fetching stops:", stopsError);
 }
 
-// 2. Get Stops (Limit 50 for performance for now)
-const stopsResult = await db
-  .prepare(
-    `
-    SELECT stop_pk, stop_id, stop_name, stop_lat, stop_lon, stop_timezone
-    FROM stops
-    WHERE feed_version_id = ?
-    ORDER BY stop_name
-    LIMIT 50
-`,
-  )
-  .bind(feed_version_id)
-  .all<Stop>();
+const stops = (stopsEntries || [])
+  .map((s) => s.data)
+  .sort((a, b) => a.stop_name.localeCompare(b.stop_name))
+  .slice(0, 50);
 
-const stops = stopsResult.results;
 const stopPks = stops.map((s) => s.stop_pk);
 
-interface Departure {
-  stop_pk: number;
-  stop_id: string;
-  route_short_name: string | null;
-  route_long_name: string | null;
-  route_color: string | null;
-  route_text_color: string | null;
-  trip_headsign: string | null;
-  departure_time: number; // Changed to number (seconds)
-  delay: number | null;
-  realtime_status: string | null;
-}
-
 // 3. Get Upcoming Departures for these stops
-let departures: Departure[] = [];
+let departures: any[] = [];
 if (stopPks.length > 0) {
-  const placeholders = stopPks.map(() => "?").join(",");
-
-  // Complex query to get departures with calendar checks
-  // Using integer comparisons for time and date
-  const query = `
-        SELECT
-            s.stop_pk,
-            s.stop_id,
-            r.route_short_name,
-            r.route_long_name,
-            r.route_color,
-            r.route_text_color,
-            t.trip_headsign,
-            st.departure_time,
-            tu.delay,
-            tu.status as realtime_status
-        FROM stop_times st
-        JOIN stops s ON st.stop_pk = s.stop_pk
-        JOIN trips t ON st.trip_pk = t.trip_pk
-        JOIN routes r ON t.route_pk = r.route_pk
-        LEFT JOIN trip_updates tu ON tu.trip_pk = t.trip_pk
-        WHERE s.feed_version_id = ?
-          AND s.stop_pk IN (${placeholders})
-          AND st.departure_time >= ?
-          AND st.departure_time <= ?
-          AND (
-            EXISTS (
-                SELECT 1 FROM calendar c
-                WHERE c.feed_version_id = s.feed_version_id
-                  AND c.service_id = t.service_id
-                  AND c.start_date <= ?
-                  AND c.end_date >= ?
-                  AND c.${todayColumn} = 1
-            )
-            OR EXISTS (
-                SELECT 1 FROM calendar_dates cd
-                WHERE cd.feed_version_id = s.feed_version_id
-                  AND cd.service_id = t.service_id
-                  AND cd.date = ?
-                  AND cd.exception_type = 1
-            )
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM calendar_dates cd
-            WHERE cd.feed_version_id = s.feed_version_id
-              AND cd.service_id = t.service_id
-              AND cd.date = ?
-              AND cd.exception_type = 2
-          )
-        ORDER BY st.departure_time ASC
-    `;
-
-  const result = await db
-    .prepare(query)
-    .bind(
+  const { entries, error: departuresError } = await getLiveCollection(
+    "departures",
+    {
       feed_version_id,
-      ...stopPks,
+      stopPks,
       currentSeconds,
       twoHoursLaterSeconds,
-      todayNoon, // calendar start check
-      todayNoon, // calendar end check
-      todayNoon, // calendar_dates added check
-      todayNoon, // calendar_dates removed check
-    )
-    .all<Departure>();
+      todayNoon,
+      todayColumn,
+    },
+  );
 
-  departures = result.results;
+  if (departuresError) {
+    console.error("Error fetching departures:", departuresError);
+  } else if (entries) {
+    departures = entries.map((e) => e.data);
+  }
 }
 
 // Group departures by stop
@@ -204,9 +112,7 @@ const stopsWithDepartures = stops.map((stop) => {
                     : "#000";
 
                   // Format time
-                  // dep.departure_time is seconds from midnight.
-                  // Use stop timezone (or agency fallback)
-                  const stopTz = stop.stop_timezone || timezone;
+                  const stopTz = stop.stop_timezone || agency_timezone;
                   const stopMidnight = DateTime.now()
                     .setZone(stopTz)
                     .startOf("day");
@@ -220,9 +126,6 @@ const stopsWithDepartures = stops.map((stop) => {
                   if (dep.delay != null) {
                     const delayMin = Math.round(dep.delay / 60);
                     if (delayMin > 0) {
-                      // Adjust time for display if delayed? Usually "Realtime" means adjusted.
-                      // The previous code showed "Scheduled (+Delay)".
-                      // Let's keep that format but just append the delay info.
                       timeDisplay += ` (+${delayMin} min)`;
                       statusClass = "delayed";
                     } else if (delayMin < 0) {
