@@ -2,6 +2,7 @@ import { transit_realtime } from "./gtfs-realtime";
 
 export interface RealtimeWorkflowParams {
   agency: string;
+  delayStart?: number;
 }
 
 export interface RealtimeWorkflowEnv {

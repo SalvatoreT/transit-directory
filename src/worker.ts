@@ -70,9 +70,36 @@ export function createExports(manifest: SSRManifest) {
         // @ts-expect-error Request type mismatch because Astro uses the old `cloudflare/workers-types` package
         return handle(manifest, app, request, env, ctx);
       },
-      async scheduled(event, _env, _ctx) {
+      async scheduled(event, env, ctx) {
         const scheduledAt = new Date(event.scheduledTime).toISOString();
         console.log(`[cron] Triggered at ${scheduledAt}`);
+
+        ctx.waitUntil(
+          (async () => {
+            const { results } = await env.gtfs_data
+              .prepare("SELECT source_name FROM feed_source")
+              .all<{ source_name: string }>();
+
+            if (!results || results.length === 0) return;
+
+            const agencies = results.map((r) => r.source_name);
+
+            // Create 4 sets of parameters with 15s delay increments (0, 15, 30, 45)
+            const allWorkflowParams = [0, 15, 30, 45].flatMap((delay) =>
+              agencies.map((agency) => ({
+                params: { agency, delayStart: delay },
+              })),
+            );
+
+            await Promise.all([
+              env.IMPORT_TRIP_UPDATES_WORKFLOW.createBatch(allWorkflowParams),
+              env.IMPORT_VEHICLE_POSITIONS_WORKFLOW.createBatch(
+                allWorkflowParams,
+              ),
+              env.IMPORT_SERVICE_ALERTS_WORKFLOW.createBatch(allWorkflowParams),
+            ]);
+          })(),
+        );
       },
     } satisfies ExportedHandler<Env>,
     createExports,

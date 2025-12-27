@@ -9,7 +9,7 @@
     "cpu_ms": 60000 // 60 seconds
   },
   "triggers": {
-    "crons": ["0 * * * *"]
+    "crons": ["* * * * *"]
   },
   "build": {
     "command": "yarn build",

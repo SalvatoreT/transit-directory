@@ -19,7 +19,14 @@ export class ImportServiceAlertsWorkflow extends WorkflowEntrypoint<
     event: Readonly<WorkflowEvent<RealtimeWorkflowParams>>,
     step: WorkflowStep,
   ) {
-    const { agency } = event.payload;
+    const { agency, delayStart } = event.payload;
+
+    if (delayStart && delayStart > 0) {
+      await step.sleep(
+        `[ServiceAlerts] Delay start ${delayStart}s`,
+        `${delayStart} seconds`,
+      );
+    }
 
     await step.do(`[ServiceAlerts] Process ${agency}`, async () => {
       const url = `http://api.511.org/transit/servicealerts?api_key=${this.env.API_KEY_511}&agency=${agency}`;
