@@ -8,9 +8,9 @@
   "limits": {
     "cpu_ms": 60000 // 60 seconds
   },
-  "triggers": {
-    "crons": ["* * * * *"]
-  },
+  // "triggers": {
+  //   "crons": ["* * * * *"]
+  // },
   "build": {
     "command": "yarn build",
     "cwd": ".",
