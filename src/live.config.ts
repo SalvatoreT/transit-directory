@@ -161,7 +161,9 @@ export const collections = {
             JOIN stops s ON st.stop_pk = s.stop_pk
             JOIN trips t ON st.trip_pk = t.trip_pk
             JOIN routes r ON t.route_pk = r.route_pk
-            LEFT JOIN trip_updates tu ON tu.trip_pk = t.trip_pk
+LEFT JOIN (
+                SELECT *, MAX(update_pk) FROM trip_updates GROUP BY trip_pk
+            ) tu ON tu.trip_pk = t.trip_pk
             WHERE s.feed_version_id = ?
               AND s.stop_pk IN (${placeholders})
               AND st.departure_time >= ?

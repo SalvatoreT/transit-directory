@@ -82,7 +82,7 @@ export class ImportTripUpdatesWorkflow extends WorkflowEntrypoint<
       }
 
       const stmt = this.env.gtfs_data.prepare(`
-          INSERT INTO trip_updates (feed_source_id, trip_id, trip_pk, delay, status, updated_time)
+          INSERT OR IGNORE INTO trip_updates (feed_source_id, trip_id, trip_pk, delay, status, updated_time)
           VALUES (?, ?, ?, ?, ?, ?)
         `);
 

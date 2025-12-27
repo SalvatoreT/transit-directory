@@ -98,7 +98,7 @@ export class ImportVehiclePositionsWorkflow extends WorkflowEntrypoint<
       }
 
       const stmt = this.env.gtfs_data.prepare(`
-            INSERT INTO vehicle_positions (
+            INSERT OR REPLACE INTO vehicle_positions (
                 feed_source_id, vehicle_id, trip_pk, route_pk, 
                 latitude, longitude, speed, heading, timestamp, 
                 current_status, occupancy_status
