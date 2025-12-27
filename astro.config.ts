@@ -20,9 +20,7 @@ export default defineConfig({
       namedExports: [
         "createExports",
         "Import511Workflow",
-        "ImportTripUpdatesWorkflow",
-        "ImportVehiclePositionsWorkflow",
-        "ImportServiceAlertsWorkflow",
+        "Import511RealtimeWorkflow",
       ],
     },
   }),

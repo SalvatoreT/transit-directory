@@ -43,19 +43,9 @@
       "class_name": "Import511Workflow"
     },
     {
-      "name": "import-trip-updates-workflow",
-      "binding": "IMPORT_TRIP_UPDATES_WORKFLOW",
-      "class_name": "ImportTripUpdatesWorkflow"
-    },
-    {
-      "name": "import-vehicle-positions-workflow",
-      "binding": "IMPORT_VEHICLE_POSITIONS_WORKFLOW",
-      "class_name": "ImportVehiclePositionsWorkflow"
-    },
-    {
-      "name": "import-service-alerts-workflow",
-      "binding": "IMPORT_SERVICE_ALERTS_WORKFLOW",
-      "class_name": "ImportServiceAlertsWorkflow"
+      "name": "import-realtime-workflow",
+      "binding": "IMPORT_REALTIME_WORKFLOW",
+      "class_name": "Import511RealtimeWorkflow"
     }
   ],
   "r2_buckets": [
