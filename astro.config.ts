@@ -6,6 +6,9 @@ const isVitest = Boolean(process.env.VITEST);
 
 // https://astro.build/config
 export default defineConfig({
+  experimental: {
+    liveContentCollections: true,
+  },
   adapter: cloudflare({
     imageService: "compile",
     platformProxy: {

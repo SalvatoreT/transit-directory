@@ -2,23 +2,13 @@
 export const prerender = false;
 
 import Layout from "../layouts/Layout.astro";
+import { getLiveCollection } from "astro:content";
 
-// @ts-expect-error TypeScript doesn't know about Astro.locals.runtime
-const db = Astro.locals.runtime.env.gtfs_data as D1Database;
-
-const agenciesResult = await db
-  .prepare(
-    `
-    SELECT a.agency_name, a.agency_id
-    FROM agency a
-    JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id
-    WHERE fv.is_active = 1
-    ORDER BY a.agency_name
-  `,
-  )
-  .all<{ agency_name: string; agency_id: string }>();
-
-const agencies = agenciesResult.results;
+const { entries: agenciesEntries, error } = await getLiveCollection("agencies");
+if (error) {
+  console.error("Error fetching agencies:", error);
+}
+const agencies = (agenciesEntries || []).map((entry) => entry.data);
 ---
 
 <Layout>
