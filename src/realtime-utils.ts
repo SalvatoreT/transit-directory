@@ -26,19 +26,8 @@ export async function fetchAndDecodeFeed(url: string): Promise<FeedResponse> {
   const arrayBuffer = await response.arrayBuffer();
   const buffer = new Uint8Array(arrayBuffer);
   try {
-    const message = transit_realtime.FeedMessage.decode(buffer);
-    const plainMessage = transit_realtime.FeedMessage.toObject(message, {
-      longs: String,
-      enums: Number,
-      bytes: String,
-      defaults: true,
-      arrays: true,
-      objects: true,
-      oneofs: true,
-    });
-
     return {
-      message: plainMessage,
+      message: transit_realtime.FeedMessage.decode(buffer),
       rateLimitLimit: rateLimitLimit ? parseInt(rateLimitLimit, 10) : null,
       rateLimitRemaining: rateLimitRemaining
         ? parseInt(rateLimitRemaining, 10)

@@ -19,6 +19,7 @@
 - `yarn astro check` — Astro/TypeScript diagnostics.
 - `yarn generate-types` — regenerate Cloudflare worker types via Wrangler.
 - `yarn wrangler d1 migrations apply gtfs_data --local` — apply local D1 migrations.
+- `yarn wrangler d1 execute gtfs_data --local --command "<SQL COMMAND>"` — run arbitrary SQL against local D1.
 - `curl http://127.0.0.1:8788/workflow?id=<operator_id>` — trigger GTFS import for a specific agency via the `Import511Workflow`.
 - `curl "http://127.0.0.1:8788/cdn-cgi/handler/scheduled"` — trigger cron locally while dev server is running.
 
