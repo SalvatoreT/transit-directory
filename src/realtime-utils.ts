@@ -7,7 +7,7 @@ export interface RealtimeWorkflowEnv {
 }
 
 export interface FeedResponse {
-  message: transit_realtime.FeedMessage;
+  message: transit_realtime.IFeedMessage;
   rateLimitLimit: number | null;
   rateLimitRemaining: number | null;
 }
@@ -25,13 +25,29 @@ export async function fetchAndDecodeFeed(url: string): Promise<FeedResponse> {
 
   const arrayBuffer = await response.arrayBuffer();
   const buffer = new Uint8Array(arrayBuffer);
-  return {
-    message: transit_realtime.FeedMessage.decode(buffer),
-    rateLimitLimit: rateLimitLimit ? parseInt(rateLimitLimit, 10) : null,
-    rateLimitRemaining: rateLimitRemaining
-      ? parseInt(rateLimitRemaining, 10)
-      : null,
-  };
+  try {
+    const message = transit_realtime.FeedMessage.decode(buffer);
+    const plainMessage = transit_realtime.FeedMessage.toObject(message, {
+      longs: String,
+      enums: Number,
+      bytes: String,
+      defaults: true,
+      arrays: true,
+      objects: true,
+      oneofs: true,
+    });
+
+    return {
+      message: plainMessage,
+      rateLimitLimit: rateLimitLimit ? parseInt(rateLimitLimit, 10) : null,
+      rateLimitRemaining: rateLimitRemaining
+        ? parseInt(rateLimitRemaining, 10)
+        : null,
+    };
+  } catch (err) {
+    console.error(`Error decoding GTFS-Realtime feed from ${url}:`, err);
+    throw err;
+  }
 }
 
 export async function getFeedContext(
