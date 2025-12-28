@@ -14,7 +14,10 @@ export function createExports(manifest: SSRManifest) {
         if (url.pathname === "/workflow") {
           const agencyId = url.searchParams.get("id");
           if (agencyId) {
-            await env.IMPORT_511_WORKFLOW.create({ params: { id: agencyId } });
+            const instance = await env.IMPORT_511_WORKFLOW.create({
+              params: { id: agencyId },
+            });
+            console.log("Workflow instance created:", instance);
             return new Response(`Workflow started for agency id: ${agencyId}`, {
               status: 202,
             });
