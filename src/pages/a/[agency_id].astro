@@ -2,8 +2,7 @@
 export const prerender = false;
 
 import Layout from "../../layouts/Layout.astro";
-import { DateTime } from "luxon";
-import { getLiveCollection, getLiveEntry } from "astro:content";
+import { getLiveEntry, getLiveCollection } from "astro:content";
 
 const { agency_id } = Astro.params;
 
@@ -21,31 +20,12 @@ if (agencyError || !agencyEntry) {
   return new Response(`Agency not found: ${agency_id}`, { status: 404 });
 }
 
-const { agency_name, feed_version_id, agency_timezone } = agencyEntry.data;
+const { agency_name, feed_version_id } = agencyEntry.data;
 
-// Set up time context based on Agency Timezone
-const now = DateTime.now().setZone(agency_timezone);
-const midnight = now.startOf("day");
-const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
-const twoHoursLaterSeconds = currentSeconds + 2 * 60 * 60;
-const todayNoon = midnight.set({ hour: 12 }).toSeconds(); // Unix timestamp for date checks
-
-// Map Luxon weekday (1=Mon...7=Sun) to GTFS column
-const days = [
-  "sunday",
-  "monday",
-  "tuesday",
-  "wednesday",
-  "thursday",
-  "friday",
-  "saturday",
-];
-const todayColumn = days[now.weekday % 7];
-
-// 2. Get Stops
+// 2. Get Parent Stops
 const { entries: stopsEntries, error: stopsError } = await getLiveCollection(
   "stops",
-  { feed_version_id },
+  { feed_version_id, is_parent: true },
 );
 
 if (stopsError) {
@@ -54,108 +34,23 @@ if (stopsError) {
 
 const stops = (stopsEntries || [])
   .map((s) => s.data)
-  .sort((a, b) => a.stop_name.localeCompare(b.stop_name))
-  .slice(0, 50);
-
-const stopPks = stops.map((s) => s.stop_pk);
-
-// 3. Get Upcoming Departures for these stops
-let departures: any[] = [];
-if (stopPks.length > 0) {
-  const { entries, error: departuresError } = await getLiveCollection(
-    "departures",
-    {
-      feed_version_id,
-      stopPks,
-      currentSeconds,
-      twoHoursLaterSeconds,
-      todayNoon,
-      todayColumn,
-    },
-  );
-
-  if (departuresError) {
-    console.error("Error fetching departures:", departuresError);
-  } else if (entries) {
-    departures = entries.map((e) => e.data);
-  }
-}
-
-// Group departures by stop
-const stopsWithDepartures = stops.map((stop) => {
-  const stopDepartures = departures.filter((d) => d.stop_pk === stop.stop_pk);
-  return {
-    ...stop,
-    departures: stopDepartures,
-  };
-});
+  .sort((a, b) => a.stop_name.localeCompare(b.stop_name));
 ---
 
 <Layout>
   <main>
     <h1>{agency_name} <span class="agency-id">({agency_id})</span></h1>
-    <p class="subtitle">Realtime Arrivals</p>
+    <p class="subtitle">Select a Stop</p>
 
     <div class="stops-grid">
       {
-        stopsWithDepartures.map((stop) => (
-          <div class="stop-card">
-            <h2>{stop.stop_name}</h2>
-            <div class="departures-list">
-              {stop.departures.length > 0 ? (
-                stop.departures.map((dep) => {
-                  const routeColor = dep.route_color
-                    ? `#${dep.route_color}`
-                    : "#eee";
-                  const routeTextColor = dep.route_text_color
-                    ? `#${dep.route_text_color}`
-                    : "#000";
-
-                  // Format time
-                  const stopTz = stop.stop_timezone || agency_timezone;
-                  const stopMidnight = DateTime.now()
-                    .setZone(stopTz)
-                    .startOf("day");
-                  const depTime = stopMidnight.plus({
-                    seconds: dep.departure_time,
-                  });
-                  let timeDisplay = depTime.toFormat("HH:mm");
-
-                  let statusClass = "scheduled";
-
-                  if (dep.delay != null) {
-                    const delayMin = Math.round(dep.delay / 60);
-                    if (delayMin > 0) {
-                      timeDisplay += ` (+${delayMin} min)`;
-                      statusClass = "delayed";
-                    } else if (delayMin < 0) {
-                      timeDisplay += ` (${delayMin} min)`;
-                      statusClass = "early";
-                    } else {
-                      statusClass = "on-time";
-                    }
-                  }
-
-                  return (
-                    <div class="departure-row">
-                      <span
-                        class="route-badge"
-                        style={`background-color: ${routeColor}; color: ${routeTextColor}`}
-                      >
-                        {dep.route_short_name || dep.route_long_name}
-                      </span>
-                      <span class="headsign">{dep.trip_headsign}</span>
-                      <span class={`time ${statusClass}`}>{timeDisplay}</span>
-                    </div>
-                  );
-                })
-              ) : (
-                <div class="no-departures">
-                  No upcoming departures in the next 2 hours.
-                </div>
-              )}
+        stops.map((stop) => (
+          <a href={`/a/${agency_id}/s/${stop.stop_id}`} class="stop-card-link">
+            <div class="stop-card">
+              <h2>{stop.stop_name}</h2>
+              <span class="chevron">›</span>
             </div>
-          </div>
+          </a>
         ))
       }
     </div>
@@ -187,8 +82,15 @@ const stopsWithDepartures = stops.map((stop) => {
   }
 
   .stops-grid {
-    display: grid;
-    gap: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .stop-card-link {
+    text-decoration: none;
+    color: inherit;
+    display: block;
   }
 
   .stop-card {
@@ -197,66 +99,26 @@ const stopsWithDepartures = stops.map((stop) => {
     padding: 1.5rem;
     background: #fff;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition:
+      transform 0.1s ease,
+      box-shadow 0.1s ease;
+  }
+
+  .stop-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
   }
 
   .stop-card h2 {
-    margin: 0 0 1rem 0;
+    margin: 0;
     font-size: 1.25rem;
   }
 
-  .departures-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  .departure-row {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding-bottom: 0.75rem;
-    border-bottom: 1px solid #eee;
-  }
-
-  .departure-row:last-child {
-    border-bottom: none;
-    padding-bottom: 0;
-  }
-
-  .route-badge {
-    padding: 0.25rem 0.5rem;
-    border-radius: 4px;
-    font-weight: bold;
-    min-width: 3rem;
-    text-align: center;
-    font-size: 0.9rem;
-  }
-
-  .headsign {
-    flex: 1;
-    font-weight: 500;
-  }
-
-  .time {
-    font-variant-numeric: tabular-nums;
-    font-weight: bold;
-  }
-
-  .delayed {
-    color: #d32f2f;
-  }
-  .early {
-    color: #388e3c;
-  }
-  .on-time {
-    color: #388e3c;
-  }
-  .scheduled {
-    color: #555;
-  }
-
-  .no-departures {
-    color: #888;
-    font-style: italic;
+  .chevron {
+    font-size: 1.5rem;
+    color: #999;
   }
 </style>

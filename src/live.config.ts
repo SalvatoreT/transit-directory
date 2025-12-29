@@ -19,6 +19,8 @@ const stopsSchema = z.object({
   stop_lon: z.number(),
   stop_timezone: z.string().nullable(),
   feed_version_id: z.number(),
+  location_type: z.number().nullable(),
+  parent_station: z.number().nullable(),
 });
 
 const departuresSchema = z.object({
@@ -40,6 +42,8 @@ type DeparturesData = z.infer<typeof departuresSchema>;
 
 interface StopsFilter {
   feed_version_id: number;
+  is_parent?: boolean;
+  parent_station_pk?: number;
 }
 
 interface DeparturesFilter {
@@ -88,13 +92,32 @@ export const collections = {
     loader: {
       name: "stops-loader",
       loadCollection: async ({ filter }) => {
-        const { feed_version_id } = filter ?? {};
+        const { feed_version_id, is_parent, parent_station_pk } = filter ?? {};
         let query = "SELECT * FROM stops";
         const params: any[] = [];
+        const conditions: string[] = [];
+
         if (feed_version_id) {
-          query += " WHERE feed_version_id = ?";
+          conditions.push("feed_version_id = ?");
           params.push(feed_version_id);
         }
+
+        if (is_parent) {
+          // Parent stops are those with location_type=1 OR parent_station is NULL
+          // Adjusting logic: if explicitly asked for parents, we usually want the top-level nodes.
+          // Using parent_station IS NULL is the safest way to get top-level nodes.
+          conditions.push("(parent_station IS NULL)");
+        }
+
+        if (parent_station_pk !== undefined) {
+          conditions.push("parent_station = ?");
+          params.push(parent_station_pk);
+        }
+
+        if (conditions.length > 0) {
+          query += " WHERE " + conditions.join(" AND ");
+        }
+
         const result = await getDb()
           .prepare(query)
           .bind(...params)
