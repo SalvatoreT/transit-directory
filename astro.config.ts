@@ -1,4 +1,5 @@
 import { defineConfig } from "astro/config";
+import path from "node:path";
 
 import cloudflare from "@astrojs/cloudflare";
 
@@ -8,6 +9,24 @@ const isVitest = Boolean(process.env.VITEST);
 export default defineConfig({
   experimental: {
     liveContentCollections: true,
+  },
+  vite: {
+    resolve: {
+      alias:
+        process.env.NODE_ENV === "production"
+          ? {}
+          : {
+              "cloudflare:workers": path.resolve(
+                process.cwd(),
+                "src/mocks/cloudflare-workers.ts",
+              ),
+            },
+    },
+    build: {
+      rollupOptions: {
+        external: ["cloudflare:workers"],
+      },
+    },
   },
   adapter: cloudflare({
     imageService: "compile",
