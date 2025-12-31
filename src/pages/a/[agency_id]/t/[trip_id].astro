@@ -1,0 +1,283 @@
+---
+export const prerender = false;
+
+import Layout from "../../../../layouts/Layout.astro";
+import { getLiveEntry, getLiveCollection } from "astro:content";
+import DepartureTime from "../../../../components/DepartureTime.astro";
+import { DateTime } from "luxon";
+
+const { agency_id, trip_id } = Astro.params;
+
+if (!agency_id || !trip_id) {
+  return Astro.redirect("/404");
+}
+
+// 1. Get Agency
+const { entry: agencyEntry, error: agencyError } = await getLiveEntry(
+  "agencies",
+  agency_id,
+);
+
+if (agencyError || !agencyEntry) {
+  return new Response(`Agency not found: ${agency_id}`, { status: 404 });
+}
+
+const { agency_name, feed_version_id, agency_timezone } = agencyEntry.data;
+
+// 2. Get Trip
+const { entry: tripEntry, error: tripError } = await getLiveEntry("trips", {
+  id: trip_id,
+  feed_version_id,
+});
+
+if (tripError || !tripEntry) {
+  return new Response(`Trip not found: ${trip_id}`, { status: 404 });
+}
+
+const trip = tripEntry.data;
+
+// 3. Get Route
+const { entries: routeEntries } = await getLiveCollection("routes", {
+  feed_version_id,
+  route_pk: trip.route_pk,
+});
+
+const route = routeEntries?.[0]?.data;
+const routeColor = route?.route_color ? `#${route.route_color}` : "#eee";
+const routeTextColor = route?.route_text_color
+  ? `#${route.route_text_color}`
+  : "#000";
+
+// 4. Get Trip Stops
+const { entries: tripStopsEntries, error: tripStopsError } =
+  await getLiveCollection("trip_stops", {
+    trip_pk: trip.trip_pk,
+  });
+
+if (tripStopsError) {
+  console.error("Error fetching trip stops:", tripStopsError);
+}
+
+const stops = (tripStopsEntries || []).map((e) => e.data);
+
+const now = DateTime.now().setZone(agency_timezone);
+const midnight = now.startOf("day");
+const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
+---
+
+<Layout>
+  <main>
+    <div class="header">
+      <div class="nav-links">
+        <a href={`/a/${agency_id}`} class="back-link">← {agency_name}</a>
+
+        {
+          route && (
+            <span class="sep">
+              /
+              <a href={`/a/${agency_id}/r/${route.route_id}`} class="back-link">
+                Route {route.route_short_name}
+              </a>
+            </span>
+          )
+        }
+      </div>
+
+      <div class="trip-header">
+        <div
+          class="route-pill"
+          style={`background-color: ${routeColor}; color: ${routeTextColor}`}
+        >
+          {route?.route_short_name}
+        </div>
+
+        <h1>{trip.trip_headsign || trip.trip_short_name || trip.trip_id}</h1>
+      </div>
+
+      <p class="subtitle">
+        {route?.route_long_name} • Trip ID: {trip.trip_id}
+      </p>
+    </div>
+
+    <div class="content">
+      <div class="stops-list">
+        {
+          stops.map((stop) => {
+            const time = stop.departure_time || stop.arrival_time || 0;
+            const delay = stop.delay || 0;
+            const isPast = time + delay < currentSeconds;
+
+            return (
+              <div class={`stop-row ${isPast ? "past-stop" : ""}`}>
+                <div class="stop-info">
+                  <a
+                    href={`/a/${agency_id}/s/${stop.stop_id}`}
+                    class="stop-link"
+                  >
+                    {stop.stop_name}
+                  </a>
+                </div>
+                <div class="stop-times">
+                  <DepartureTime
+                    departureTime={stop.arrival_time || 0}
+                    delay={stop.delay}
+                    timezone={agency_timezone}
+                  />
+                </div>
+              </div>
+            );
+          })
+        }
+      </div>
+    </div>
+  </main>
+</Layout>
+
+<style>
+  main {
+    max-width: 800px;
+
+    margin: 0 auto;
+
+    padding: 2rem;
+
+    font-family: system-ui, sans-serif;
+  }
+
+  .header {
+    margin-bottom: 2rem;
+
+    border-bottom: 1px solid #eee;
+
+    padding-bottom: 2rem;
+  }
+
+  .nav-links {
+    margin-bottom: 1rem;
+
+    color: #666;
+  }
+
+  .back-link {
+    color: #0066cc;
+
+    text-decoration: none;
+
+    font-weight: 500;
+  }
+
+  .back-link:hover {
+    text-decoration: underline;
+  }
+
+  .sep {
+    margin: 0 0.5rem;
+
+    color: #ccc;
+  }
+
+  .trip-header {
+    display: flex;
+
+    align-items: center;
+
+    gap: 1rem;
+
+    margin-bottom: 1rem;
+  }
+
+  h1 {
+    font-size: 2rem;
+
+    margin: 0;
+  }
+
+  .route-pill {
+    padding: 0.5rem 1rem;
+
+    border-radius: 6px;
+
+    font-weight: bold;
+
+    min-width: 3rem;
+
+    text-align: center;
+
+    font-size: 1.5rem;
+
+    display: flex;
+
+    justify-content: center;
+
+    align-items: center;
+  }
+
+  .subtitle {
+    color: #666;
+
+    margin: 0;
+  }
+
+  .stops-list {
+    display: flex;
+
+    flex-direction: column;
+
+    border: 1px solid #ddd;
+
+    border-radius: 8px;
+
+    overflow: hidden;
+
+    background: #fff;
+
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  }
+
+  .stop-row {
+    display: flex;
+
+    justify-content: space-between;
+
+    align-items: center;
+
+    padding: 1rem;
+
+    border-bottom: 1px solid #eee;
+
+    background: #fff;
+  }
+
+  .stop-row:last-child {
+    border-bottom: none;
+  }
+
+  .past-stop {
+    opacity: 0.5;
+    background-color: #f9f9f9;
+  }
+
+  .stop-info {
+    flex: 1;
+  }
+
+  .stop-link {
+    text-decoration: none;
+
+    color: #000;
+
+    font-weight: 500;
+  }
+
+  .stop-link:hover {
+    color: #0066cc;
+
+    text-decoration: underline;
+  }
+
+  .stop-times {
+    display: flex;
+
+    gap: 1.5rem;
+  }
+</style>

@@ -14,19 +14,27 @@ const agenciesSchema = z.object({
 const stopsSchema = z.object({
   stop_pk: z.number(),
   stop_id: z.string(),
+  stop_code: z.string().nullable(),
   stop_name: z.string(),
+  stop_desc: z.string().nullable(),
   stop_lat: z.number(),
   stop_lon: z.number(),
-  stop_timezone: z.string().nullable(),
-  feed_version_id: z.number(),
+  zone_id: z.string().nullable(),
+  stop_url: z.string().nullable(),
   location_type: z.number().nullable(),
   parent_station: z.number().nullable(),
+  stop_timezone: z.string().nullable(),
+  wheelchair_boarding: z.number().nullable(),
+  level_id: z.string().nullable(),
+  platform_code: z.string().nullable(),
+  feed_version_id: z.number(),
 });
 
 const departuresSchema = z.object({
   stop_pk: z.number(),
   stop_id: z.string(),
   route_id: z.string(),
+  trip_id: z.string(),
   route_short_name: z.string().nullable(),
   route_long_name: z.string().nullable(),
   route_color: z.string().nullable(),
@@ -66,6 +74,7 @@ interface StopsFilter {
 interface RoutesFilter {
   feed_version_id: number;
   agency_pk?: number;
+  route_pk?: number;
 }
 
 interface DeparturesFilter {
@@ -176,7 +185,7 @@ export const collections = {
     loader: {
       name: "routes-loader",
       loadCollection: async ({ filter }) => {
-        const { feed_version_id, agency_pk } = filter ?? {};
+        const { feed_version_id, agency_pk, route_pk } = filter ?? {};
         let query = "SELECT * FROM routes";
         const params: any[] = [];
         const conditions: string[] = [];
@@ -189,6 +198,11 @@ export const collections = {
         if (agency_pk !== undefined) {
           conditions.push("agency_pk = ?");
           params.push(agency_pk);
+        }
+
+        if (route_pk !== undefined) {
+          conditions.push("route_pk = ?");
+          params.push(route_pk);
         }
 
         if (conditions.length > 0) {
@@ -302,6 +316,114 @@ export const collections = {
       trip_headsign: z.string().nullable(),
     }),
   }),
+  trips: defineLiveCollection({
+    loader: {
+      name: "trips-loader",
+      loadCollection: async () => {
+        return {
+          entries: [],
+        };
+      },
+      loadEntry: async ({ filter }) => {
+        const result = await getDb()
+          .prepare(
+            "SELECT * FROM trips WHERE trip_id = ? AND feed_version_id = ?",
+          )
+          .bind(filter.id, filter.feed_version_id)
+          .first<any>();
+        if (!result) return { error: new Error("Trip not found") };
+        return {
+          id: `${result.feed_version_id}-${result.trip_id}`,
+          data: result,
+        };
+      },
+    } as LiveLoader<any, { id: string; feed_version_id: number }, never>,
+    schema: z.object({
+      trip_pk: z.number(),
+      feed_version_id: z.number(),
+      trip_id: z.string(),
+      route_pk: z.number(),
+      service_id: z.string(),
+      trip_headsign: z.string().nullable(),
+      trip_short_name: z.string().nullable(),
+      direction_id: z.number().nullable(),
+      block_id: z.string().nullable(),
+      shape_id: z.string().nullable(),
+      wheelchair_accessible: z.number().nullable(),
+      bikes_allowed: z.number().nullable(),
+    }),
+  }),
+  trip_stops: defineLiveCollection({
+    loader: {
+      name: "trip-stops-loader",
+      loadCollection: async ({ filter }) => {
+        const { trip_pk } = filter ?? {};
+        if (trip_pk === undefined) return { entries: [] };
+
+        const query = `
+                  SELECT 
+                      s.*,
+                      st.arrival_time,
+                      st.departure_time,
+                      st.stop_sequence,
+                      st.timepoint,
+                      st.pickup_type,
+                      st.drop_off_type,
+                      tu.delay
+                  FROM stops s
+                  JOIN stop_times st ON s.stop_pk = st.stop_pk
+                  LEFT JOIN trip_updates tu ON st.trip_pk = tu.trip_pk
+                  WHERE st.trip_pk = ?
+                  ORDER BY st.stop_sequence ASC
+              `;
+
+        const result = await getDb().prepare(query).bind(trip_pk).all<
+          StopsData & {
+            arrival_time: number | null;
+            departure_time: number | null;
+            stop_sequence: number;
+            timepoint: number | null;
+            pickup_type: number | null;
+            drop_off_type: number | null;
+            delay: number | null;
+          }
+        >();
+
+        return {
+          entries: result.results.map((s) => ({
+            id: `${s.feed_version_id}-${s.stop_id}-${s.stop_sequence}`,
+            data: s,
+          })),
+        };
+      },
+      loadEntry: async () => {
+        return {
+          error: new Error("loadEntry not implemented for trip_stops"),
+        };
+      },
+    } as LiveLoader<
+      StopsData & {
+        arrival_time: number | null;
+        departure_time: number | null;
+        stop_sequence: number;
+        timepoint: number | null;
+        pickup_type: number | null;
+        drop_off_type: number | null;
+        delay: number | null;
+      },
+      never,
+      { trip_pk: number }
+    >,
+    schema: stopsSchema.extend({
+      arrival_time: z.number().nullable(),
+      departure_time: z.number().nullable(),
+      stop_sequence: z.number(),
+      timepoint: z.number().nullable(),
+      pickup_type: z.number().nullable(),
+      drop_off_type: z.number().nullable(),
+      delay: z.number().nullable(),
+    }),
+  }),
   departures: defineLiveCollection({
     loader: {
       name: "departures-loader",
@@ -344,6 +466,7 @@ export const collections = {
                 s.stop_pk,
                 s.stop_id,
                 r.route_id,
+                t.trip_id,
                 r.route_short_name,
                 r.route_long_name,
                 r.route_color,

@@ -194,15 +194,18 @@ const textColor = route.route_text_color
 
                   <div class="stop-times">
                     {stop.departures.length > 0 ? (
-                      stop.departures
-                        .slice(0, 3)
-                        .map((dep) => (
+                      stop.departures.slice(0, 3).map((dep) => (
+                        <a
+                          href={`/a/${agency_id}/t/${dep.trip_id}`}
+                          class="time-link"
+                        >
                           <DepartureTime
                             departureTime={dep.departure_time}
                             delay={dep.delay}
                             timezone={stop.stop_timezone || agency_timezone}
                           />
-                        ))
+                        </a>
+                      ))
                     ) : (
                       <span class="no-times">No upcoming times</span>
                     )}
@@ -335,11 +338,15 @@ const textColor = route.route_text_color
 
     flex-direction: column;
 
-    border: 1px solid #eee;
+    border: 1px solid #ddd;
 
     border-radius: 8px;
 
     overflow: hidden;
+
+    background: #fff;
+
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
   }
 
   .stop-row {
@@ -382,6 +389,17 @@ const textColor = route.route_text_color
     display: flex;
 
     gap: 0.5rem;
+  }
+
+  .time-link {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+    transition: transform 0.1s ease;
+  }
+
+  .time-link:hover {
+    transform: scale(1.05);
   }
 
   .no-times {

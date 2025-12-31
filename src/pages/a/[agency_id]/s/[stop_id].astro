@@ -148,7 +148,12 @@ const stopsWithDepartures = targetStops.map((stop) => {
                           {dep.route_short_name || dep.route_long_name}
                         </span>
                       </a>
-                      <span class="headsign">{dep.trip_headsign}</span>
+                      <a
+                        href={`/a/${agency_id}/t/${dep.trip_id}`}
+                        class="headsign-link"
+                      >
+                        {dep.trip_headsign}
+                      </a>
                       <DepartureTime
                         departureTime={dep.departure_time}
                         delay={dep.delay}
@@ -180,6 +185,8 @@ const stopsWithDepartures = targetStops.map((stop) => {
 
   .header {
     margin-bottom: 2rem;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 2rem;
   }
 
   .back-link {
@@ -271,9 +278,16 @@ const stopsWithDepartures = targetStops.map((stop) => {
     font-size: 0.9rem;
   }
 
-  .headsign {
+  .headsign-link {
     flex: 1;
     font-weight: 500;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .headsign-link:hover {
+    text-decoration: underline;
+    color: #0066cc;
   }
 
   .no-departures {

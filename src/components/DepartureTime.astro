@@ -11,7 +11,9 @@ const { departureTime, delay, timezone } = Astro.props;
 
 const stopMidnight = DateTime.now().setZone(timezone).startOf("day");
 const depTime = stopMidnight.plus({ seconds: departureTime });
-const timeDisplay = depTime.toFormat("HH:mm");
+
+const isNextDay = depTime.day !== stopMidnight.day;
+const timeDisplay = depTime.toFormat("h:mm a") + (isNextDay ? " (+1)" : "");
 
 let statusClass = "scheduled";
 let timeLabel = timeDisplay;
