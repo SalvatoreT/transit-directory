@@ -1,0 +1,116 @@
+---
+import { getLiveCollection } from "astro:content";
+
+interface Props {
+  feed_version_id: number;
+  agency_id: string;
+  agency_pk: number;
+}
+
+const { feed_version_id, agency_id, agency_pk } = Astro.props;
+
+const { entries: routesEntries, error: routesError } = await getLiveCollection(
+  "routes",
+  { feed_version_id, agency_pk },
+);
+
+if (routesError) {
+  console.error("Error fetching routes:", routesError);
+}
+
+const routes = (routesEntries || []).map((r) => r.data);
+---
+
+<div class="routes-grid">
+  {
+    routes.map((route) => {
+      const bgColor = route.route_color ? `#${route.route_color}` : "#eee";
+      const textColor = route.route_text_color
+        ? `#${route.route_text_color}`
+        : "#000";
+
+      return (
+        <a href={`/a/${agency_id}/r/${route.route_id}`} class="route-card-link">
+          <div class="route-card">
+            <div
+              class="route-pill"
+              style={`background-color: ${bgColor}; color: ${textColor}`}
+            >
+              {route.route_short_name}
+            </div>
+            <div class="route-details">
+              <h2>{route.route_long_name || route.route_short_name}</h2>
+              {route.route_desc && <p class="route-desc">{route.route_desc}</p>}
+            </div>
+            <span class="chevron">›</span>
+          </div>
+        </a>
+      );
+    })
+  }
+  {routes.length === 0 && <p>No routes found.</p>}
+</div>
+
+<style>
+  .routes-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .route-card-link {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+  }
+
+  .route-card {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 1.5rem;
+    background: #fff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    transition:
+      transform 0.1s ease,
+      box-shadow 0.1s ease;
+  }
+
+  .route-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  }
+
+  .route-pill {
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-weight: bold;
+    min-width: 3rem;
+    text-align: center;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .route-details {
+    flex: 1;
+  }
+
+  .route-details h2 {
+    margin: 0;
+    font-size: 1.25rem;
+  }
+
+  .route-desc {
+    margin: 0.25rem 0 0;
+    color: #666;
+    font-size: 0.9rem;
+  }
+
+  .chevron {
+    font-size: 1.5rem;
+    color: #999;
+  }
+</style>

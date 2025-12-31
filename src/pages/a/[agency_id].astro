@@ -2,7 +2,9 @@
 export const prerender = false;
 
 import Layout from "../../layouts/Layout.astro";
-import { getLiveEntry, getLiveCollection } from "astro:content";
+import { getLiveEntry } from "astro:content";
+import AgencyRoutesView from "../../components/AgencyRoutesView.astro";
+import AgencyStopsView from "../../components/AgencyStopsView.astro";
 
 const { agency_id } = Astro.params;
 
@@ -20,40 +22,45 @@ if (agencyError || !agencyEntry) {
   return new Response(`Agency not found: ${agency_id}`, { status: 404 });
 }
 
-const { agency_name, feed_version_id } = agencyEntry.data;
+const { agency_name, feed_version_id, agency_pk } = agencyEntry.data;
 
-// 2. Get Parent Stops
-const { entries: stopsEntries, error: stopsError } = await getLiveCollection(
-  "stops",
-  { feed_version_id, is_parent: true },
-);
-
-if (stopsError) {
-  console.error("Error fetching stops:", stopsError);
-}
-
-const stops = (stopsEntries || [])
-  .map((s) => s.data)
-  .sort((a, b) => a.stop_name.localeCompare(b.stop_name));
+const view =
+  Astro.url.searchParams.get("view") === "stops" ? "stops" : "routes";
 ---
 
 <Layout>
   <main>
     <h1>{agency_name} <span class="agency-id">({agency_id})</span></h1>
-    <p class="subtitle">Select a Stop</p>
 
-    <div class="stops-grid">
-      {
-        stops.map((stop) => (
-          <a href={`/a/${agency_id}/s/${stop.stop_id}`} class="stop-card-link">
-            <div class="stop-card">
-              <h2>{stop.stop_name}</h2>
-              <span class="chevron">›</span>
-            </div>
-          </a>
-        ))
-      }
+    <div class="view-toggle">
+      <a
+        href={`/a/${agency_id}`}
+        class={`toggle-btn ${view === "routes" ? "active" : ""}`}>Routes</a
+      >
+      <a
+        href={`/a/${agency_id}?view=stops`}
+        class={`toggle-btn ${view === "stops" ? "active" : ""}`}>Stops</a
+      >
     </div>
+
+    <p class="subtitle">
+      {view === "routes" ? "Active Routes" : "Select a Stop"}
+    </p>
+
+    {
+      view === "routes" ? (
+        <AgencyRoutesView
+          feed_version_id={feed_version_id}
+          agency_id={agency_id}
+          agency_pk={agency_pk}
+        />
+      ) : (
+        <AgencyStopsView
+          feed_version_id={feed_version_id}
+          agency_id={agency_id}
+        />
+      )
+    }
   </main>
 </Layout>
 
@@ -78,47 +85,35 @@ const stops = (stopsEntries || [])
 
   .subtitle {
     color: #666;
-    margin-bottom: 2rem;
+    margin-bottom: 1.5rem;
   }
 
-  .stops-grid {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  .stop-card-link {
-    text-decoration: none;
-    color: inherit;
-    display: block;
-  }
-
-  .stop-card {
-    border: 1px solid #ddd;
+  .view-toggle {
+    display: inline-flex;
+    background: #f0f0f0;
+    padding: 4px;
     border-radius: 8px;
-    padding: 1.5rem;
-    background: #fff;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    transition:
-      transform 0.1s ease,
-      box-shadow 0.1s ease;
+    margin-bottom: 1.5rem;
   }
 
-  .stop-card:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  .toggle-btn {
+    text-decoration: none;
+    color: #666;
+    padding: 0.5rem 1.5rem;
+    border-radius: 6px;
+    font-weight: 500;
+    font-size: 0.9rem;
+    transition: all 0.2s ease;
   }
 
-  .stop-card h2 {
-    margin: 0;
-    font-size: 1.25rem;
+  .toggle-btn:hover {
+    color: #333;
   }
 
-  .chevron {
-    font-size: 1.5rem;
-    color: #999;
+  .toggle-btn.active {
+    background-color: #fff;
+    color: #000;
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   }
 </style>

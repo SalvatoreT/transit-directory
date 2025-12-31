@@ -26,6 +26,7 @@ const stopsSchema = z.object({
 const departuresSchema = z.object({
   stop_pk: z.number(),
   stop_id: z.string(),
+  route_id: z.string(),
   route_short_name: z.string().nullable(),
   route_long_name: z.string().nullable(),
   route_color: z.string().nullable(),
@@ -36,9 +37,25 @@ const departuresSchema = z.object({
   realtime_status: z.string().nullable(),
 });
 
+const routesSchema = z.object({
+  route_pk: z.number(),
+  route_id: z.string(),
+  agency_pk: z.number().nullable(),
+  feed_version_id: z.number(),
+  route_short_name: z.string().nullable(),
+  route_long_name: z.string().nullable(),
+  route_desc: z.string().nullable(),
+  route_type: z.number(),
+  route_url: z.string().nullable(),
+  route_color: z.string().nullable(),
+  route_text_color: z.string().nullable(),
+  route_sort_order: z.number().nullable(),
+});
+
 type AgenciesData = z.infer<typeof agenciesSchema>;
 type StopsData = z.infer<typeof stopsSchema>;
 type DeparturesData = z.infer<typeof departuresSchema>;
+type RoutesData = z.infer<typeof routesSchema>;
 
 interface StopsFilter {
   feed_version_id: number;
@@ -46,9 +63,15 @@ interface StopsFilter {
   parent_station_pk?: number;
 }
 
+interface RoutesFilter {
+  feed_version_id: number;
+  agency_pk?: number;
+}
+
 interface DeparturesFilter {
   feed_version_id: number;
-  stopPks: number[];
+  stopPks?: number[];
+  route_pk?: number;
   currentSeconds: number;
   twoHoursLaterSeconds: number;
   todayNoon: number;
@@ -149,6 +172,136 @@ export const collections = {
     >,
     schema: stopsSchema,
   }),
+  routes: defineLiveCollection({
+    loader: {
+      name: "routes-loader",
+      loadCollection: async ({ filter }) => {
+        const { feed_version_id, agency_pk } = filter ?? {};
+        let query = "SELECT * FROM routes";
+        const params: any[] = [];
+        const conditions: string[] = [];
+
+        if (feed_version_id) {
+          conditions.push("feed_version_id = ?");
+          params.push(feed_version_id);
+        }
+
+        if (agency_pk !== undefined) {
+          conditions.push("agency_pk = ?");
+          params.push(agency_pk);
+        }
+
+        if (conditions.length > 0) {
+          query += " WHERE " + conditions.join(" AND ");
+        }
+
+        // Order by sort_order if available, then short_name
+        query += " ORDER BY route_sort_order ASC, route_short_name ASC";
+
+        const result = await getDb()
+          .prepare(query)
+          .bind(...params)
+          .all<RoutesData>();
+        return {
+          entries: result.results.map((r) => ({
+            id: `${r.feed_version_id}-${r.route_id}`,
+            data: r,
+          })),
+        };
+      },
+      loadEntry: async ({ filter }) => {
+        const result = await getDb()
+          .prepare(
+            "SELECT * FROM routes WHERE route_id = ? AND feed_version_id = ?",
+          )
+          .bind(filter.id, filter.feed_version_id)
+          .first<RoutesData>();
+        if (!result) return { error: new Error("Route not found") };
+        return {
+          id: `${result.feed_version_id}-${result.route_id}`,
+          data: result,
+        };
+      },
+    } as LiveLoader<
+      RoutesData,
+      { id: string; feed_version_id: number },
+      RoutesFilter
+    >,
+    schema: routesSchema,
+  }),
+  route_stops: defineLiveCollection({
+    loader: {
+      name: "route-stops-loader",
+      loadCollection: async ({ filter }) => {
+        const { route_pk } = filter ?? {};
+        if (route_pk === undefined) return { entries: [] };
+
+        const query = `
+            WITH TripStops AS (
+                SELECT 
+                    t.trip_pk,
+                    t.direction_id,
+                    t.trip_headsign,
+                    COUNT(st.stop_time_pk) as stop_count
+                FROM trips t
+                JOIN stop_times st ON t.trip_pk = st.trip_pk
+                WHERE t.route_pk = ?
+                GROUP BY t.trip_pk, t.direction_id, t.trip_headsign
+            ),
+            BestTrips AS (
+                SELECT direction_id, trip_pk, trip_headsign
+                FROM (
+                    SELECT direction_id, trip_pk, trip_headsign,
+                           ROW_NUMBER() OVER (PARTITION BY direction_id ORDER BY stop_count DESC) as rn
+                    FROM TripStops
+                ) WHERE rn = 1
+            )
+            SELECT 
+                s.*,
+                bt.direction_id,
+                bt.trip_headsign,
+                st.stop_sequence
+            FROM stops s
+            JOIN stop_times st ON s.stop_pk = st.stop_pk
+            JOIN BestTrips bt ON st.trip_pk = bt.trip_pk
+            ORDER BY bt.direction_id, st.stop_sequence
+        `;
+
+        const result = await getDb().prepare(query).bind(route_pk).all<
+          StopsData & {
+            direction_id: number;
+            stop_sequence: number;
+            trip_headsign: string;
+          }
+        >();
+
+        return {
+          entries: result.results.map((s) => ({
+            id: `${s.feed_version_id}-${s.stop_id}-${s.direction_id}`,
+            data: s,
+          })),
+        };
+      },
+      loadEntry: async () => {
+        return {
+          error: new Error("loadEntry not implemented for route_stops"),
+        };
+      },
+    } as LiveLoader<
+      StopsData & {
+        direction_id: number;
+        stop_sequence: number;
+        trip_headsign: string;
+      },
+      never,
+      { route_pk: number }
+    >,
+    schema: stopsSchema.extend({
+      direction_id: z.number(),
+      stop_sequence: z.number(),
+      trip_headsign: z.string().nullable(),
+    }),
+  }),
   departures: defineLiveCollection({
     loader: {
       name: "departures-loader",
@@ -157,21 +310,40 @@ export const collections = {
         const {
           feed_version_id,
           stopPks,
+          route_pk,
           currentSeconds,
           twoHoursLaterSeconds,
           todayNoon,
           todayColumn,
         } = filter;
 
-        if (!feed_version_id || !stopPks || stopPks.length === 0) {
+        if (!feed_version_id) {
           return { entries: [] };
         }
 
-        const placeholders = stopPks.map(() => "?").join(",");
+        const conditions: string[] = ["s.feed_version_id = ?"];
+        const params: any[] = [feed_version_id];
+
+        if (stopPks && stopPks.length > 0) {
+          const placeholders = stopPks.map(() => "?").join(",");
+          conditions.push(`s.stop_pk IN (${placeholders})`);
+          params.push(...stopPks);
+        }
+
+        if (route_pk !== undefined) {
+          conditions.push("r.route_pk = ?");
+          params.push(route_pk);
+        }
+
+        params.push(currentSeconds, twoHoursLaterSeconds);
+        // Calendar params (used 4 times in the query below)
+        const calendarParams = [todayNoon, todayNoon, todayNoon, todayNoon];
+
         const query = `
             SELECT
                 s.stop_pk,
                 s.stop_id,
+                r.route_id,
                 r.route_short_name,
                 r.route_long_name,
                 r.route_color,
@@ -187,8 +359,7 @@ export const collections = {
 LEFT JOIN (
                 SELECT *, MAX(update_pk) FROM trip_updates GROUP BY trip_pk
             ) tu ON tu.trip_pk = t.trip_pk
-            WHERE s.feed_version_id = ?
-              AND s.stop_pk IN (${placeholders})
+            WHERE ${conditions.join(" AND ")}
               AND st.departure_time >= ?
               AND st.departure_time <= ?
               AND (
@@ -220,16 +391,7 @@ LEFT JOIN (
 
         const result = await getDb()
           .prepare(query)
-          .bind(
-            feed_version_id,
-            ...stopPks,
-            currentSeconds,
-            twoHoursLaterSeconds,
-            todayNoon,
-            todayNoon,
-            todayNoon,
-            todayNoon,
-          )
+          .bind(...params, ...calendarParams)
           .all<DeparturesData>();
 
         return {

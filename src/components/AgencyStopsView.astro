@@ -1,0 +1,79 @@
+---
+import { getLiveCollection } from "astro:content";
+
+interface Props {
+  feed_version_id: number;
+  agency_id: string;
+}
+
+const { feed_version_id, agency_id } = Astro.props;
+
+const { entries: stopsEntries, error: stopsError } = await getLiveCollection(
+  "stops",
+  { feed_version_id, is_parent: true },
+);
+
+if (stopsError) {
+  console.error("Error fetching stops:", stopsError);
+}
+
+const stops = (stopsEntries || [])
+  .map((s) => s.data)
+  .sort((a, b) => a.stop_name.localeCompare(b.stop_name));
+---
+
+<div class="stops-grid">
+  {
+    stops.map((stop) => (
+      <a href={`/a/${agency_id}/s/${stop.stop_id}`} class="stop-card-link">
+        <div class="stop-card">
+          <h2>{stop.stop_name}</h2>
+          <span class="chevron">›</span>
+        </div>
+      </a>
+    ))
+  }
+</div>
+
+<style>
+  .stops-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .stop-card-link {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+  }
+
+  .stop-card {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 1.5rem;
+    background: #fff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition:
+      transform 0.1s ease,
+      box-shadow 0.1s ease;
+  }
+
+  .stop-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  }
+
+  .stop-card h2 {
+    margin: 0;
+    font-size: 1.25rem;
+  }
+
+  .chevron {
+    font-size: 1.5rem;
+    color: #999;
+  }
+</style>

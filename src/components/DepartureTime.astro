@@ -1,0 +1,64 @@
+---
+import { DateTime } from "luxon";
+
+interface Props {
+  departureTime: number;
+  delay: number | null | undefined;
+  timezone: string;
+}
+
+const { departureTime, delay, timezone } = Astro.props;
+
+const stopMidnight = DateTime.now().setZone(timezone).startOf("day");
+const depTime = stopMidnight.plus({ seconds: departureTime });
+const timeDisplay = depTime.toFormat("HH:mm");
+
+let statusClass = "scheduled";
+let timeLabel = timeDisplay;
+
+if (delay != null) {
+  const delayMin = Math.round(delay / 60);
+  if (delayMin > 0) {
+    timeLabel += ` (+${delayMin})`;
+    statusClass = "delayed";
+  } else if (delayMin < 0) {
+    timeLabel += ` (${delayMin})`;
+    statusClass = "early";
+  } else {
+    statusClass = "on-time";
+  }
+}
+---
+
+<span class={`time-pill ${statusClass}`}>
+  {timeLabel}
+</span>
+
+<style>
+  .time-pill {
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    background: #f0f0f0;
+    color: #555;
+    white-space: nowrap;
+    display: inline-block;
+  }
+
+  .delayed {
+    background: #ffebee;
+    color: #c62828;
+  }
+
+  .early {
+    background: #e8f5e9;
+    color: #2e7d32;
+  }
+
+  .on-time {
+    background: #e8f5e9;
+    color: #2e7d32;
+  }
+</style>

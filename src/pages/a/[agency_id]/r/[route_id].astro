@@ -1,0 +1,394 @@
+---
+export const prerender = false;
+
+import Layout from "../../../../layouts/Layout.astro";
+
+import { getLiveEntry, getLiveCollection } from "astro:content";
+
+import { DateTime } from "luxon";
+import DepartureTime from "../../../../components/DepartureTime.astro";
+
+const { agency_id, route_id } = Astro.params;
+
+if (!agency_id || !route_id) {
+  return Astro.redirect("/404");
+}
+
+// 1. Get Agency and Active Feed Version
+
+const { entry: agencyEntry, error: agencyError } = await getLiveEntry(
+  "agencies",
+
+  agency_id,
+);
+
+if (agencyError || !agencyEntry) {
+  return new Response(`Agency not found: ${agency_id}`, { status: 404 });
+}
+
+const { agency_name, feed_version_id, agency_timezone } = agencyEntry.data;
+
+// 2. Get Route Details
+
+const { entry: routeEntry, error: routeError } = await getLiveEntry("routes", {
+  id: route_id,
+
+  feed_version_id,
+});
+
+if (routeError || !routeEntry) {
+  return new Response(`Route not found: ${route_id}`, { status: 404 });
+}
+
+const route = routeEntry.data;
+
+// 3. Get Route Stops
+
+const { entries: routeStopsEntries, error: routeStopsError } =
+  await getLiveCollection("route_stops", {
+    route_pk: route.route_pk,
+  });
+
+if (routeStopsError) {
+  console.error("Error fetching route stops:", routeStopsError);
+}
+
+const routeStops = (routeStopsEntries || []).map((e) => e.data);
+
+// 4. Get Upcoming Departures for this route
+
+const now = DateTime.now().setZone(agency_timezone);
+
+const midnight = now.startOf("day");
+
+const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
+
+const twoHoursLaterSeconds = currentSeconds + 4 * 60 * 60; // 4 hours for route view
+
+const todayNoon = midnight.set({ hour: 12 }).toSeconds();
+
+const days = [
+  "sunday",
+
+  "monday",
+
+  "tuesday",
+
+  "wednesday",
+
+  "thursday",
+
+  "friday",
+
+  "saturday",
+];
+
+const todayColumn = days[now.weekday % 7];
+
+const { entries: departuresEntries, error: departuresError } =
+  await getLiveCollection("departures", {
+    feed_version_id,
+
+    route_pk: route.route_pk,
+
+    currentSeconds,
+
+    twoHoursLaterSeconds,
+
+    todayNoon,
+
+    todayColumn,
+  });
+
+if (departuresError) {
+  console.error("Error fetching departures:", departuresError);
+}
+
+const departures = (departuresEntries || []).map((e) => e.data);
+
+// Group stops by direction
+
+const directionIds = [...new Set(routeStops.map((s) => s.direction_id))].sort();
+
+const stopsByDirection = directionIds.map((dirId) => {
+  const stops = routeStops.filter((s) => s.direction_id === dirId);
+
+  return {
+    direction_id: dirId,
+
+    headsign: stops[0]?.trip_headsign || `Direction ${dirId}`,
+
+    stops: stops.map((stop) => {
+      const stopDepartures = departures.filter(
+        (d) => d.stop_id === stop.stop_id,
+      );
+
+      return {
+        ...stop,
+
+        departures: stopDepartures,
+      };
+    }),
+  };
+});
+
+const bgColor = route.route_color ? `#${route.route_color}` : "#eee";
+
+const textColor = route.route_text_color
+  ? `#${route.route_text_color}`
+  : "#000";
+---
+
+<Layout>
+  <main>
+    <div class="header">
+      <a href={`/a/${agency_id}`} class="back-link">← Back to {agency_name}</a>
+
+      <div class="route-header">
+        <div
+          class="route-pill"
+          style={`background-color: ${bgColor}; color: ${textColor}`}
+        >
+          {route.route_short_name}
+        </div>
+
+        <h1>{route.route_long_name || route.route_short_name}</h1>
+      </div>
+
+      {route.route_desc && <p class="route-desc">{route.route_desc}</p>}
+
+      <div class="route-meta">
+        {
+          route.route_url && (
+            <p>
+              <a
+                href={route.route_url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Official Route Page ↗
+              </a>
+            </p>
+          )
+        }
+      </div>
+    </div>
+
+    <div class="content">
+      {
+        stopsByDirection.map((direction) => (
+          <section class="direction-section">
+            <h2>To {direction.headsign}</h2>
+
+            <div class="stops-list">
+              {direction.stops.map((stop) => (
+                <div class="stop-row">
+                  <div class="stop-info">
+                    <a
+                      href={`/a/${agency_id}/s/${stop.stop_id}`}
+                      class="stop-link"
+                    >
+                      {stop.stop_name}
+                    </a>
+                  </div>
+
+                  <div class="stop-times">
+                    {stop.departures.length > 0 ? (
+                      stop.departures
+                        .slice(0, 3)
+                        .map((dep) => (
+                          <DepartureTime
+                            departureTime={dep.departure_time}
+                            delay={dep.delay}
+                            timezone={stop.stop_timezone || agency_timezone}
+                          />
+                        ))
+                    ) : (
+                      <span class="no-times">No upcoming times</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ))
+      }
+
+      {stopsByDirection.length === 0 && <p>No stops found for this route.</p>}
+    </div>
+  </main>
+</Layout>
+
+<style>
+  main {
+    max-width: 800px;
+
+    margin: 0 auto;
+
+    padding: 2rem;
+
+    font-family: system-ui, sans-serif;
+  }
+
+  .header {
+    margin-bottom: 2rem;
+
+    border-bottom: 1px solid #eee;
+
+    padding-bottom: 2rem;
+  }
+
+  .back-link {
+    display: inline-block;
+
+    margin-bottom: 1rem;
+
+    color: #0066cc;
+
+    text-decoration: none;
+
+    font-weight: 500;
+  }
+
+  .back-link:hover {
+    text-decoration: underline;
+  }
+
+  .route-header {
+    display: flex;
+
+    align-items: center;
+
+    gap: 1rem;
+
+    margin-bottom: 1rem;
+  }
+
+  h1 {
+    font-size: 2rem;
+
+    margin: 0;
+  }
+
+  .route-pill {
+    padding: 0.5rem 1rem;
+
+    border-radius: 6px;
+
+    font-weight: bold;
+
+    min-width: 3rem;
+
+    text-align: center;
+
+    font-size: 1.5rem;
+
+    display: flex;
+
+    justify-content: center;
+
+    align-items: center;
+  }
+
+  .route-desc {
+    font-size: 1.1rem;
+
+    color: #444;
+
+    line-height: 1.5;
+
+    max-width: 65ch;
+  }
+
+  .route-meta {
+    margin-top: 1rem;
+  }
+
+  .route-meta a {
+    color: #0066cc;
+
+    text-decoration: none;
+  }
+
+  .route-meta a:hover {
+    text-decoration: underline;
+  }
+
+  .direction-section {
+    margin-bottom: 3rem;
+  }
+
+  .direction-section h2 {
+    font-size: 1.5rem;
+
+    margin-bottom: 1.5rem;
+
+    color: #333;
+
+    border-left: 4px solid #ccc;
+
+    padding-left: 1rem;
+  }
+
+  .stops-list {
+    display: flex;
+
+    flex-direction: column;
+
+    border: 1px solid #eee;
+
+    border-radius: 8px;
+
+    overflow: hidden;
+  }
+
+  .stop-row {
+    display: flex;
+
+    justify-content: space-between;
+
+    align-items: center;
+
+    padding: 1rem;
+
+    border-bottom: 1px solid #eee;
+
+    background: #fff;
+  }
+
+  .stop-row:last-child {
+    border-bottom: none;
+  }
+
+  .stop-info {
+    flex: 1;
+  }
+
+  .stop-link {
+    text-decoration: none;
+
+    color: #000;
+
+    font-weight: 500;
+  }
+
+  .stop-link:hover {
+    color: #0066cc;
+
+    text-decoration: underline;
+  }
+
+  .stop-times {
+    display: flex;
+
+    gap: 0.5rem;
+  }
+
+  .no-times {
+    font-size: 0.85rem;
+
+    color: #999;
+
+    font-style: italic;
+  }
+</style>

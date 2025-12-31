@@ -4,6 +4,7 @@ export const prerender = false;
 import Layout from "../../../../layouts/Layout.astro";
 import { DateTime } from "luxon";
 import { getLiveCollection, getLiveEntry } from "astro:content";
+import DepartureTime from "../../../../components/DepartureTime.astro";
 
 const { agency_id, stop_id } = Astro.params;
 
@@ -133,41 +134,26 @@ const stopsWithDepartures = targetStops.map((stop) => {
                     ? `#${dep.route_text_color}`
                     : "#000";
 
-                  // Format time
-                  const stopTz = stop.stop_timezone || agency_timezone;
-                  const stopMidnight = DateTime.now()
-                    .setZone(stopTz)
-                    .startOf("day");
-                  const depTime = stopMidnight.plus({
-                    seconds: dep.departure_time,
-                  });
-                  let timeDisplay = depTime.toFormat("HH:mm");
-
-                  let statusClass = "scheduled";
-
-                  if (dep.delay != null) {
-                    const delayMin = Math.round(dep.delay / 60);
-                    if (delayMin > 0) {
-                      timeDisplay += ` (+${delayMin} min)`;
-                      statusClass = "delayed";
-                    } else if (delayMin < 0) {
-                      timeDisplay += ` (${delayMin} min)`;
-                      statusClass = "early";
-                    } else {
-                      statusClass = "on-time";
-                    }
-                  }
-
                   return (
                     <div class="departure-row">
-                      <span
-                        class="route-badge"
-                        style={`background-color: ${routeColor}; color: ${routeTextColor}`}
+                      <a
+                        href={`/a/${agency_id}/r/${dep.route_id}`}
+                        class="route-badge-link"
+                        title="View Route"
                       >
-                        {dep.route_short_name || dep.route_long_name}
-                      </span>
+                        <span
+                          class="route-badge"
+                          style={`background-color: ${routeColor}; color: ${routeTextColor}`}
+                        >
+                          {dep.route_short_name || dep.route_long_name}
+                        </span>
+                      </a>
                       <span class="headsign">{dep.trip_headsign}</span>
-                      <span class={`time ${statusClass}`}>{timeDisplay}</span>
+                      <DepartureTime
+                        departureTime={dep.departure_time}
+                        delay={dep.delay}
+                        timezone={stop.stop_timezone || agency_timezone}
+                      />
                     </div>
                   );
                 })
@@ -265,6 +251,17 @@ const stopsWithDepartures = targetStops.map((stop) => {
     padding-bottom: 0;
   }
 
+  .route-badge-link {
+    text-decoration: none;
+    color: inherit;
+    display: inline-flex;
+    transition: transform 0.1s ease;
+  }
+
+  .route-badge-link:hover {
+    transform: scale(1.05);
+  }
+
   .route-badge {
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
@@ -277,24 +274,6 @@ const stopsWithDepartures = targetStops.map((stop) => {
   .headsign {
     flex: 1;
     font-weight: 500;
-  }
-
-  .time {
-    font-variant-numeric: tabular-nums;
-    font-weight: bold;
-  }
-
-  .delayed {
-    color: #d32f2f;
-  }
-  .early {
-    color: #388e3c;
-  }
-  .on-time {
-    color: #388e3c;
-  }
-  .scheduled {
-    color: #555;
   }
 
   .no-departures {
