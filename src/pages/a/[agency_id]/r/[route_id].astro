@@ -137,9 +137,12 @@ const bgColor = route.route_color ? `#${route.route_color}` : "#eee";
 const textColor = route.route_text_color
   ? `#${route.route_text_color}`
   : "#000";
+
+const title = `${route.route_short_name} ${route.route_long_name ? "- " + route.route_long_name : ""} - ${agency_name}`;
+const description = `Stops and schedule for ${route.route_short_name} ${route.route_long_name || ""} by ${agency_name}.`;
 ---
 
-<Layout>
+<Layout title={title} description={description}>
   <main>
     <div class="header">
       <a href={`/a/${agency_id}`} class="back-link">← Back to {agency_name}</a>

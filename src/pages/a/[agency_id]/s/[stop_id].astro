@@ -107,9 +107,12 @@ const stopsWithDepartures = targetStops.map((stop) => {
     departures: stopDepartures,
   };
 });
+
+const title = `${parentStop.stop_name} (${stop_id}) - ${agency_name}`;
+const description = `Upcoming departures for ${parentStop.stop_name} by ${agency_name}.`;
 ---
 
-<Layout>
+<Layout title={title} description={description}>
   <main>
     <div class="header">
       <a href={`/a/${agency_id}`} class="back-link">← Back to {agency_name}</a>
