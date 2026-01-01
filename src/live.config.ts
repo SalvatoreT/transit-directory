@@ -372,7 +372,9 @@ export const collections = {
                       tu.delay
                   FROM stops s
                   JOIN stop_times st ON s.stop_pk = st.stop_pk
-                  LEFT JOIN trip_updates tu ON st.trip_pk = tu.trip_pk
+                  LEFT JOIN (
+                      SELECT *, MAX(update_pk) FROM trip_updates GROUP BY trip_pk
+                  ) tu ON st.trip_pk = tu.trip_pk
                   WHERE st.trip_pk = ?
                   ORDER BY st.stop_sequence ASC
               `;
