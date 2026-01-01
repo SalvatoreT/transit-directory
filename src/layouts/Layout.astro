@@ -1,3 +1,17 @@
+---
+interface Props {
+  title?: string;
+  description?: string;
+  logo?: string;
+}
+
+const {
+  title = "Transit Directory",
+  description = "Real-time transit information for agencies.",
+  logo = "/favicon.svg",
+} = Astro.props;
+---
+
 <!doctype html>
 <html lang="en">
   <head>
@@ -5,7 +19,15 @@
     <meta name="viewport" content="width=device-width" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="generator" content={Astro.generator} />
-    <title>Transit Directory</title>
+    <title>{title}</title>
+    <meta name="description" content={description} />
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={Astro.url} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:logo" content={new URL(logo, Astro.url)} />
   </head>
   <body>
     <slot />

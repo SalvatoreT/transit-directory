@@ -63,9 +63,14 @@ const stops = (tripStopsEntries || []).map((e) => e.data);
 const now = DateTime.now().setZone(agency_timezone);
 const midnight = now.startOf("day");
 const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
+
+const tripName = trip.trip_headsign || trip.trip_short_name || trip.trip_id;
+const routeName = route?.route_short_name || "";
+const title = `Trip ${tripName} - ${routeName} - ${agency_name}`;
+const description = `Trip details for ${tripName} on route ${routeName} by ${agency_name}.`;
 ---
 
-<Layout>
+<Layout title={title} description={description}>
   <main>
     <div class="header">
       <div class="nav-links">

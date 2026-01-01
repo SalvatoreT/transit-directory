@@ -26,9 +26,12 @@ const { agency_name, feed_version_id, agency_pk } = agencyEntry.data;
 
 const view =
   Astro.url.searchParams.get("view") === "stops" ? "stops" : "routes";
+
+const title = `${agency_name} (${agency_id}) - Transit Directory`;
+const description = `View active routes and stops for ${agency_name}.`;
 ---
 
-<Layout>
+<Layout title={title} description={description}>
   <main>
     <div class="header">
       <a href="/" class="back-link">← Back to Transit Directory</a>
