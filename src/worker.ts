@@ -4,6 +4,52 @@ import { handle } from "@astrojs/cloudflare/handler";
 import { Import511Workflow } from "./Import511Workflow";
 import { Import511RealtimeWorkflow } from "./Import511RealtimeWorkflow";
 
+async function triggerRealtimeWorkflow(env: Env) {
+  const { results } = await env.gtfs_data
+    .prepare("SELECT source_name FROM feed_source")
+    .all<{ source_name: string }>();
+
+  const agencies = results.map((r) => r.source_name);
+  if (agencies.length === 0) {
+    console.log("No agencies found.");
+    return;
+  }
+
+  // 60 requests/hour limit shared.
+  // Each iteration does 2 requests.
+  // Sleep time between requests = 60 * N.
+  const waitTimeSeconds = Math.max(60, agencies.length * 60);
+
+  const batch = agencies.map((id) => {
+    // ID Format: YYYYMMDD-HHMMSS-511-<agency_id>-<remaining_random-characters>
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, "0");
+    const yyyymmdd = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+    const hhmmss = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const prefix = `${yyyymmdd}-${hhmmss}-511-${id}-`;
+
+    // Workflow instance IDs must be <= 64 characters
+    const maxLen = 64;
+    const remaining = Math.max(0, maxLen - prefix.length);
+    const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+    let randomStr = "";
+    for (let i = 0; i < remaining; i++) {
+      randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+
+    return {
+      id: prefix + randomStr,
+      params: {
+        agencyId: id,
+        waitTimeSeconds,
+      },
+    };
+  });
+
+  await env.IMPORT_REALTIME_WORKFLOW.createBatch(batch);
+  console.log(`Triggered realtime workflow for ${agencies.length} agencies.`);
+}
+
 export function createExports(manifest: SSRManifest) {
   const app = new App(manifest);
   return {
@@ -29,7 +75,7 @@ export function createExports(manifest: SSRManifest) {
         }
 
         if (url.pathname === "/realtime-workflow") {
-          await env.IMPORT_REALTIME_WORKFLOW.create();
+          await triggerRealtimeWorkflow(env);
           return new Response(`Realtime Workflow started`, {
             status: 202,
           });
@@ -42,11 +88,7 @@ export function createExports(manifest: SSRManifest) {
         const scheduledAt = new Date(event.scheduledTime).toISOString();
         console.log(`[cron] Triggered at ${scheduledAt}`);
 
-        ctx.waitUntil(
-          (async () => {
-            await env.IMPORT_REALTIME_WORKFLOW.create();
-          })(),
-        );
+        ctx.waitUntil(triggerRealtimeWorkflow(env));
       },
     } satisfies ExportedHandler<Env>,
     createExports,
