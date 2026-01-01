@@ -58,6 +58,12 @@ export function createExports(manifest: SSRManifest) {
         // trigger workflow with /workflow?id=agency_id
         const url = new URL(request.url);
         if (url.pathname === "/workflow") {
+          if (!import.meta.env.DEV) {
+            return new Response("Not Found", { status: 404 });
+          }
+          if (request.method !== "POST") {
+            return new Response("Method Not Allowed", { status: 405 });
+          }
           const agencyId = url.searchParams.get("id");
           if (agencyId) {
             const instance = await env.IMPORT_511_WORKFLOW.create({
@@ -75,6 +81,12 @@ export function createExports(manifest: SSRManifest) {
         }
 
         if (url.pathname === "/realtime-workflow") {
+          if (!import.meta.env.DEV) {
+            return new Response("Not Found", { status: 404 });
+          }
+          if (request.method !== "POST") {
+            return new Response("Method Not Allowed", { status: 405 });
+          }
           await triggerRealtimeWorkflow(env);
           return new Response(`Realtime Workflow started`, {
             status: 202,
