@@ -87,8 +87,10 @@ interface DeparturesFilter {
   todayColumn: string;
 }
 
-function getDb(): D1Database {
-  return (env as any).gtfs_data as D1Database;
+function getDb() {
+  const db = (env as any).gtfs_data as D1Database;
+  // Use "first-unconstrained" to allow reading from replicas
+  return db.withSession("first-unconstrained");
 }
 
 export const collections = {
