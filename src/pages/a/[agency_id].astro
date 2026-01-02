@@ -1,5 +1,9 @@
 ---
 export const prerender = false;
+Astro.response.headers.set(
+  "Cache-Control",
+  "public, max-age=300, s-maxage=3600",
+);
 
 import Layout from "../../layouts/Layout.astro";
 import { getLiveEntry } from "astro:content";
