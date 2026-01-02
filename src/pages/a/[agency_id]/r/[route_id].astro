@@ -1,5 +1,6 @@
 ---
 export const prerender = false;
+Astro.response.headers.set("Cache-Control", "public, max-age=15, s-maxage=15");
 
 import Layout from "../../../../layouts/Layout.astro";
 
