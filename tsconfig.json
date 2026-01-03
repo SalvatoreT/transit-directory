@@ -4,6 +4,9 @@
   "exclude": ["dist", "src/gtfs-realtime.js"],
   "compilerOptions": {
     "types": ["./worker-configuration.d.ts", "node", "vitest"],
+    "paths": {
+      "@cloudflare/workers-types": ["./worker-configuration.d.ts"]
+    },
     "plugins": [
       {
         "name": "@astrojs/ts-plugin"

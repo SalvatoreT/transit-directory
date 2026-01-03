@@ -93,8 +93,17 @@ export function createExports(manifest: SSRManifest) {
           });
         }
 
-        // @ts-expect-error Request type mismatch because Astro uses the old `cloudflare/workers-types` package
-        return handle(manifest, app, request, env, ctx);
+        const cacheUrl = new URL(request.url);
+        const cacheKey = new Request(cacheUrl.toString(), request);
+        // @ts-expect-error TypeScript has issues finding the `default`
+        const cache = caches.default as Cache;
+        let response = await cache.match(cacheKey);
+
+        if (!response) {
+          response = await handle(manifest, app, request, env as any, ctx);
+          ctx.waitUntil(cache.put(cacheKey, response.clone()));
+        }
+        return response;
       },
       async scheduled(event, env, ctx) {
         const scheduledAt = new Date(event.scheduledTime).toISOString();
