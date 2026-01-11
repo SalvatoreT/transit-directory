@@ -7,9 +7,11 @@ const isVitest = Boolean(process.env.VITEST);
 
 // https://astro.build/config
 export default defineConfig({
+  site: "https://transit.directory",
   experimental: {
     liveContentCollections: true,
   },
+
   vite: {
     resolve: {
       alias:
@@ -28,6 +30,7 @@ export default defineConfig({
       },
     },
   },
+
   adapter: cloudflare({
     imageService: "compile",
     platformProxy: {
