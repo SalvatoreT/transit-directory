@@ -99,7 +99,9 @@ export const collections = {
       name: "agencies-loader",
       loadCollection: async () => {
         const result = await getDb()
-          .prepare("SELECT * FROM agency")
+          .prepare(
+            "SELECT a.* FROM agency a JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id WHERE fv.is_active = 1",
+          )
           .all<AgenciesData>();
         return {
           entries: result.results.map((a) => ({
@@ -110,7 +112,9 @@ export const collections = {
       },
       loadEntry: async ({ filter }) => {
         const result = await getDb()
-          .prepare("SELECT * FROM agency WHERE agency_id = ?")
+          .prepare(
+            "SELECT a.* FROM agency a JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id WHERE a.agency_id = ? AND fv.is_active = 1",
+          )
           .bind(filter.id)
           .first<AgenciesData>();
         if (!result) return { error: new Error("Agency not found") };
