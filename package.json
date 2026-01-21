@@ -30,6 +30,6 @@
     "prettier-plugin-astro": "0.14.1",
     "protobufjs-cli": "^2.0.0",
     "vitest": "^4.0.16",
-    "wrangler": "^4.56.0"
+    "wrangler": "^4.59.1"
   }
 }
