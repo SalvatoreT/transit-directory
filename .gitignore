@@ -34,3 +34,6 @@ pnpm-debug.log*
 
 # Cloudflare Wrangler
 /.wrangler/
+
+# Playwright
+/.playwright-mcp/

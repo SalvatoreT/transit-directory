@@ -41,6 +41,7 @@ const departuresSchema = z.object({
   route_text_color: z.string().nullable(),
   trip_headsign: z.string().nullable(),
   departure_time: z.number(),
+  stop_sequence: z.number(),
   delay: z.number().nullable(),
   realtime_status: z.string().nullable(),
 });
@@ -482,6 +483,7 @@ export const collections = {
                 r.route_text_color,
                 t.trip_headsign,
                 st.departure_time,
+                st.stop_sequence,
                 tu.delay,
                 tu.status as realtime_status
             FROM stop_times st
