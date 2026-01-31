@@ -158,11 +158,16 @@ const description = `Upcoming departures for ${parentStop.stop_name} by ${agency
                       >
                         {dep.trip_headsign}
                       </a>
-                      <DepartureTime
-                        departureTime={dep.departure_time}
-                        delay={dep.delay}
-                        timezone={stop.stop_timezone || agency_timezone}
-                      />
+                      <a
+                        href={`/a/${agency_id}/t/${dep.trip_id}?stop=${dep.stop_sequence}`}
+                        class="time-link"
+                      >
+                        <DepartureTime
+                          departureTime={dep.departure_time}
+                          delay={dep.delay}
+                          timezone={stop.stop_timezone || agency_timezone}
+                        />
+                      </a>
                     </div>
                   );
                 })
@@ -297,5 +302,14 @@ const description = `Upcoming departures for ${parentStop.stop_name} by ${agency
   .no-departures {
     color: #888;
     font-style: italic;
+  }
+
+  .time-link {
+    text-decoration: none;
+    color: inherit;
+  }
+
+  .time-link:hover {
+    opacity: 0.8;
   }
 </style>

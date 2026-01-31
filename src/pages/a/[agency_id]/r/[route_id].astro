@@ -200,7 +200,7 @@ const description = `Stops and schedule for ${route.route_short_name} ${route.ro
                     {stop.departures.length > 0 ? (
                       stop.departures.slice(0, 3).map((dep) => (
                         <a
-                          href={`/a/${agency_id}/t/${dep.trip_id}`}
+                          href={`/a/${agency_id}/t/${dep.trip_id}?stop=${dep.stop_sequence}`}
                           class="time-link"
                         >
                           <DepartureTime
