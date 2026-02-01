@@ -5,6 +5,7 @@ Astro.response.headers.set("Cache-Control", "public, max-age=15, s-maxage=15");
 import Layout from "../../../../layouts/Layout.astro";
 import { getLiveEntry, getLiveCollection } from "astro:content";
 import DepartureTime from "../../../../components/DepartureTime.astro";
+import StopHero from "../../../../components/StopHero.astro";
 import { DateTime } from "luxon";
 
 const { agency_id, trip_id } = Astro.params;
@@ -75,16 +76,6 @@ const selectedStop =
     ? stops.find((s) => s.stop_sequence === selectedStopSequence)
     : null;
 
-let selectedStopArrivalTime: DateTime | null = null;
-let selectedStopArrivalTimestamp: number | null = null;
-if (selectedStop) {
-  const arrivalSeconds =
-    selectedStop.arrival_time || selectedStop.departure_time || 0;
-  const delay = selectedStop.delay || 0;
-  selectedStopArrivalTime = midnight.plus({ seconds: arrivalSeconds + delay });
-  selectedStopArrivalTimestamp = selectedStopArrivalTime.toMillis();
-}
-
 const tripName = trip.trip_headsign || trip.trip_short_name || trip.trip_id;
 const routeName = route?.route_short_name || "";
 const title = `Trip ${tripName} - ${routeName} - ${agency_name}`;
@@ -93,6 +84,20 @@ const description = `Trip details for ${tripName} on route ${routeName} by ${age
 
 <Layout title={title} description={description}>
   <main>
+    {
+      selectedStop && (
+        <StopHero
+          routeColor={routeColor}
+          routeTextColor={routeTextColor}
+          stopName={selectedStop.stop_name}
+          arrivalSeconds={selectedStop.arrival_time}
+          departureSeconds={selectedStop.departure_time}
+          delay={selectedStop.delay || 0}
+          timezone={agency_timezone}
+        />
+      )
+    }
+
     <div class="header">
       <div class="nav-links">
         <a href={`/a/${agency_id}`} class="back-link">← {agency_name}</a>
@@ -125,43 +130,6 @@ const description = `Trip details for ${tripName} on route ${routeName} by ${age
       </p>
     </div>
 
-    {
-      selectedStop && selectedStopArrivalTime && (
-        <div
-          class="hero-box"
-          style={`background: linear-gradient(135deg, ${routeColor} 0%, ${routeColor}dd 100%); color: ${routeTextColor};`}
-        >
-          <button
-            class="hero-close"
-            id="hero-close"
-            aria-label="Close"
-            style={`color: ${routeTextColor};`}
-          >
-            &times;
-          </button>
-          <div class="hero-stop-name">{selectedStop.stop_name}</div>
-          <div class="hero-times">
-            <div class="hero-arrival">
-              <span class="hero-label">Arrival</span>
-              <span class="hero-time">
-                {selectedStopArrivalTime.toFormat("h:mm a")}
-              </span>
-            </div>
-            <div class="hero-countdown">
-              <span class="hero-label">Countdown</span>
-              <span
-                class="hero-time"
-                id="countdown"
-                data-arrival={selectedStopArrivalTimestamp}
-              >
-                --:--:--
-              </span>
-            </div>
-          </div>
-        </div>
-      )
-    }
-
     <div class="content">
       <div class="stops-list">
         {
@@ -171,7 +139,9 @@ const description = `Trip details for ${tripName} on route ${routeName} by ${age
             const isPast = time + delay < currentSeconds;
 
             return (
-              <div class={`stop-row ${isPast ? "past-stop" : ""}`}>
+              <div
+                class={`stop-row ${isPast ? "past-stop" : ""} ${stop.stop_sequence === selectedStopSequence ? "selected-stop" : ""}`}
+              >
                 <div class="stop-info">
                   <a
                     href={`/a/${agency_id}/s/${stop.stop_id}`}
@@ -181,16 +151,14 @@ const description = `Trip details for ${tripName} on route ${routeName} by ${age
                   </a>
                 </div>
                 <div class="stop-times">
-                  <a
-                    href={`/a/${agency_id}/t/${trip_id}?stop=${stop.stop_sequence}`}
-                    class="time-link"
-                  >
-                    <DepartureTime
-                      departureTime={stop.arrival_time || 0}
-                      delay={stop.delay}
-                      timezone={agency_timezone}
-                    />
-                  </a>
+                  <DepartureTime
+                    departureTime={stop.arrival_time || 0}
+                    delay={stop.delay}
+                    timezone={agency_timezone}
+                    agencyId={agency_id}
+                    tripId={trip_id}
+                    stopSequence={stop.stop_sequence}
+                  />
                 </div>
               </div>
             );
@@ -325,6 +293,10 @@ const description = `Trip details for ${tripName} on route ${routeName} by ${age
     background-color: #f9f9f9;
   }
 
+  .selected-stop {
+    background-color: #fff8e1;
+  }
+
   .stop-info {
     flex: 1;
   }
@@ -348,125 +320,4 @@ const description = `Trip details for ${tripName} on route ${routeName} by ${age
 
     gap: 1.5rem;
   }
-
-  .time-link {
-    text-decoration: none;
-    color: inherit;
-  }
-
-  .time-link:hover {
-    opacity: 0.8;
-  }
-
-  .hero-box {
-    position: relative;
-    border-radius: 12px;
-    padding: 1.5rem 2rem;
-    margin-bottom: 2rem;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  }
-
-  .hero-close {
-    position: absolute;
-    top: 1rem;
-    right: 1rem;
-    background: none;
-    border: none;
-    font-size: 1.75rem;
-    cursor: pointer;
-    opacity: 0.7;
-    line-height: 1;
-    padding: 0.25rem;
-  }
-
-  .hero-close:hover {
-    opacity: 1;
-  }
-
-  .hero-stop-name {
-    font-size: 1.25rem;
-    font-weight: 600;
-    margin-bottom: 1rem;
-    opacity: 0.9;
-    padding-right: 2rem;
-  }
-
-  .hero-times {
-    display: flex;
-    gap: 3rem;
-    flex-wrap: wrap;
-  }
-
-  .hero-arrival,
-  .hero-countdown {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .hero-label {
-    font-size: 0.85rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.8;
-  }
-
-  .hero-time {
-    font-size: 2.5rem;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-  }
-
-  .hero-countdown .hero-time {
-    font-family:
-      "SF Mono", "Monaco", "Inconsolata", "Fira Mono", "Droid Sans Mono",
-      monospace;
-  }
-
-  .hero-countdown .hero-time.arrived {
-    color: inherit;
-    opacity: 0.8;
-  }
 </style>
-
-<script>
-  function updateCountdown() {
-    const countdownEl = document.getElementById("countdown");
-    if (!countdownEl) return;
-
-    const arrivalTimestamp = parseInt(countdownEl.dataset.arrival || "0", 10);
-    if (!arrivalTimestamp) return;
-
-    const now = Date.now();
-    const diff = arrivalTimestamp - now;
-
-    if (diff <= 0) {
-      countdownEl.textContent = "Arrived";
-      countdownEl.classList.add("arrived");
-      return;
-    }
-
-    const totalSeconds = Math.floor(diff / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-
-    const pad = (n: number) => n.toString().padStart(2, "0");
-    countdownEl.textContent = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
-  }
-
-  // Update immediately and then every second
-  updateCountdown();
-  setInterval(updateCountdown, 1000);
-
-  // Handle close button
-  const closeBtn = document.getElementById("hero-close");
-  if (closeBtn) {
-    closeBtn.addEventListener("click", () => {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("stop");
-      window.location.href = url.toString();
-    });
-  }
-</script>

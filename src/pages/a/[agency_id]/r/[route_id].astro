@@ -198,18 +198,18 @@ const description = `Stops and schedule for ${route.route_short_name} ${route.ro
 
                   <div class="stop-times">
                     {stop.departures.length > 0 ? (
-                      stop.departures.slice(0, 3).map((dep) => (
-                        <a
-                          href={`/a/${agency_id}/t/${dep.trip_id}?stop=${dep.stop_sequence}`}
-                          class="time-link"
-                        >
+                      stop.departures
+                        .slice(0, 3)
+                        .map((dep) => (
                           <DepartureTime
                             departureTime={dep.departure_time}
                             delay={dep.delay}
                             timezone={stop.stop_timezone || agency_timezone}
+                            agencyId={agency_id}
+                            tripId={dep.trip_id}
+                            stopSequence={dep.stop_sequence}
                           />
-                        </a>
-                      ))
+                        ))
                     ) : (
                       <span class="no-times">No upcoming times</span>
                     )}
@@ -393,17 +393,6 @@ const description = `Stops and schedule for ${route.route_short_name} ${route.ro
     display: flex;
 
     gap: 0.5rem;
-  }
-
-  .time-link {
-    text-decoration: none;
-    color: inherit;
-    display: block;
-    transition: transform 0.1s ease;
-  }
-
-  .time-link:hover {
-    transform: scale(1.05);
   }
 
   .no-times {

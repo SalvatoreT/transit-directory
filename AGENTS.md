@@ -28,7 +28,8 @@
 ## Coding Style & Naming Conventions
 
 - TypeScript strict via `astro/tsconfigs/strict`; favor explicit types when uncertain.
-- Formatting: Prettier with `prettier-plugin-astro`; run `yarn prettier --write <paths>` before committing. JSONC uses no trailing commas.
+- Formatting: Prettier with `prettier-plugin-astro`. JSONC uses no trailing commas.
+- **IMPORTANT**: Always run `yarn format` when you're done making code changes.
 - Astro components co-locate CSS; keep styles minimal and scoped. Use ASCII-only text.
 - Name files by role (`*.astro` for UI, `.ts` for worker/logic).
 
