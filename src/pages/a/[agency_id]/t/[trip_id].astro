@@ -181,16 +181,14 @@ const description = `Trip details for ${tripName} on route ${routeName} by ${age
                   </a>
                 </div>
                 <div class="stop-times">
-                  <a
-                    href={`/a/${agency_id}/t/${trip_id}?stop=${stop.stop_sequence}`}
-                    class="time-link"
-                  >
-                    <DepartureTime
-                      departureTime={stop.arrival_time || 0}
-                      delay={stop.delay}
-                      timezone={agency_timezone}
-                    />
-                  </a>
+                  <DepartureTime
+                    departureTime={stop.arrival_time || 0}
+                    delay={stop.delay}
+                    timezone={agency_timezone}
+                    agencyId={agency_id}
+                    tripId={trip_id}
+                    stopSequence={stop.stop_sequence}
+                  />
                 </div>
               </div>
             );
@@ -347,15 +345,6 @@ const description = `Trip details for ${tripName} on route ${routeName} by ${age
     display: flex;
 
     gap: 1.5rem;
-  }
-
-  .time-link {
-    text-decoration: none;
-    color: inherit;
-  }
-
-  .time-link:hover {
-    opacity: 0.8;
   }
 
   .hero-box {

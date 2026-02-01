@@ -5,9 +5,15 @@ interface Props {
   departureTime: number;
   delay: number | null | undefined;
   timezone: string;
+  agencyId: string;
+  tripId: string;
+  stopSequence: number;
 }
 
-const { departureTime, delay, timezone } = Astro.props;
+const { departureTime, delay, timezone, agencyId, tripId, stopSequence } =
+  Astro.props;
+
+const href = `/a/${agencyId}/t/${tripId}?stop=${stopSequence}`;
 
 const stopMidnight = DateTime.now().setZone(timezone).startOf("day");
 const depTime = stopMidnight.plus({ seconds: departureTime });
@@ -32,11 +38,20 @@ if (delay != null) {
 }
 ---
 
-<span class={`time-pill ${statusClass}`}>
-  {timeLabel}
-</span>
+<a href={href} class="time-link">
+  <span class={`time-pill ${statusClass}`}>{timeLabel}</span>
+</a>
 
 <style>
+  .time-link {
+    text-decoration: none;
+    color: inherit;
+  }
+
+  .time-link:hover {
+    opacity: 0.8;
+  }
+
   .time-pill {
     padding: 0.2rem 0.5rem;
     border-radius: 4px;
