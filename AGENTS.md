@@ -16,6 +16,8 @@
 - `yarn build` — production build to `dist/` using the Cloudflare adapter.
 - `yarn preview` — serve the built site locally.
 - `yarn test` — run Vitest suite (`vitest run`).
+- `yarn lint` — check formatting with Prettier.
+- `yarn format` — format code with Prettier.
 - `yarn astro check` — Astro/TypeScript diagnostics.
 - `yarn generate-types` — regenerate Cloudflare worker types via Wrangler.
 - `yarn wrangler d1 migrations apply gtfs_data --local` — apply local D1 migrations.

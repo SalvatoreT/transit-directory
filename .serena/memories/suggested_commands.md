@@ -24,7 +24,9 @@
 
 ## Formatting
 
-- `yarn prettier --write <paths>`
+- `yarn lint` — check formatting with Prettier.
+- `yarn format` — format code with Prettier.
+- `yarn prettier --write <paths>` — format specific paths.
 
 ## Git/inspect
 
