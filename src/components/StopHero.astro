@@ -1,0 +1,205 @@
+---
+import { DateTime } from "luxon";
+
+interface Props {
+  routeColor: string;
+  routeTextColor: string;
+  stopName: string;
+  arrivalSeconds: number | null;
+  departureSeconds: number | null;
+  delay: number;
+  timezone: string;
+}
+
+const {
+  routeColor,
+  routeTextColor,
+  stopName,
+  arrivalSeconds,
+  departureSeconds,
+  delay,
+  timezone,
+} = Astro.props;
+
+const midnight = DateTime.now().setZone(timezone).startOf("day");
+
+const arrivalTime =
+  arrivalSeconds != null
+    ? midnight.plus({ seconds: arrivalSeconds + delay })
+    : null;
+const departureTime =
+  departureSeconds != null
+    ? midnight.plus({ seconds: departureSeconds + delay })
+    : null;
+
+const arrivalFormatted = arrivalTime?.toFormat("h:mm a");
+const departureFormatted = departureTime?.toFormat("h:mm a");
+const sameTime =
+  arrivalFormatted &&
+  departureFormatted &&
+  arrivalFormatted === departureFormatted;
+
+const countdownTime = arrivalTime || departureTime;
+const countdownTimestamp = countdownTime?.toMillis() || 0;
+---
+
+<div
+  class="hero-box"
+  style={`background: linear-gradient(135deg, ${routeColor} 0%, ${routeColor}dd 100%); color: ${routeTextColor};`}
+>
+  <button
+    class="hero-close"
+    id="hero-close"
+    aria-label="Close"
+    style={`color: ${routeTextColor};`}
+  >
+    &times;
+  </button>
+  <div class="hero-stop-name">{stopName}</div>
+  <div class="hero-times">
+    {
+      sameTime ? (
+        <div class="hero-arrival">
+          <span class="hero-label">Arrival/Departure</span>
+          <span class="hero-time">{arrivalFormatted}</span>
+        </div>
+      ) : (
+        <>
+          {arrivalTime && (
+            <div class="hero-arrival">
+              <span class="hero-label">Arrival</span>
+              <span class="hero-time">{arrivalFormatted}</span>
+            </div>
+          )}
+          {departureTime && (
+            <div class="hero-departure">
+              <span class="hero-label">Departure</span>
+              <span class="hero-time">{departureFormatted}</span>
+            </div>
+          )}
+        </>
+      )
+    }
+    <div class="hero-countdown">
+      <span class="hero-label">Countdown</span>
+      <span class="hero-time" id="countdown" data-arrival={countdownTimestamp}>
+        --:--:--
+      </span>
+    </div>
+  </div>
+</div>
+
+<style>
+  .hero-box {
+    position: relative;
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+
+  .hero-close {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    background: none;
+    border: none;
+    font-size: 1.75rem;
+    cursor: pointer;
+    opacity: 0.7;
+    line-height: 1;
+    padding: 0.25rem;
+  }
+
+  .hero-close:hover {
+    opacity: 1;
+  }
+
+  .hero-stop-name {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    opacity: 0.9;
+    padding-right: 2rem;
+  }
+
+  .hero-times {
+    display: flex;
+    gap: 3rem;
+    flex-wrap: wrap;
+  }
+
+  .hero-arrival,
+  .hero-departure,
+  .hero-countdown {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .hero-label {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.8;
+  }
+
+  .hero-time {
+    font-size: 2.5rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  .hero-countdown .hero-time {
+    font-family:
+      "SF Mono", "Monaco", "Inconsolata", "Fira Mono", "Droid Sans Mono",
+      monospace;
+  }
+
+  .hero-countdown .hero-time.arrived {
+    color: inherit;
+    opacity: 0.8;
+  }
+</style>
+
+<script>
+  function updateCountdown() {
+    const countdownEl = document.getElementById("countdown");
+    if (!countdownEl) return;
+
+    const arrivalTimestamp = parseInt(countdownEl.dataset.arrival || "0", 10);
+    if (!arrivalTimestamp) return;
+
+    const now = Date.now();
+    const diff = arrivalTimestamp - now;
+
+    if (diff <= 0) {
+      countdownEl.textContent = "Arrived";
+      countdownEl.classList.add("arrived");
+      return;
+    }
+
+    const totalSeconds = Math.floor(diff / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    const pad = (n: number) => n.toString().padStart(2, "0");
+    countdownEl.textContent = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+  }
+
+  // Update immediately and then every second
+  updateCountdown();
+  setInterval(updateCountdown, 1000);
+
+  // Handle close button
+  const closeBtn = document.getElementById("hero-close");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", () => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("stop");
+      window.location.href = url.toString();
+    });
+  }
+</script>
