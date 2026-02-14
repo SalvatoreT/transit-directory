@@ -38,31 +38,3 @@ export async function fetchAndDecodeFeed(url: string): Promise<FeedResponse> {
     throw err;
   }
 }
-
-export async function getFeedContext(
-  db: D1Database,
-  agencyId: string,
-): Promise<{ feedSourceId: number; feedVersionId: number | null }> {
-  // 1. Get feed_source_id
-  const source = await db
-    .prepare("SELECT feed_source_id FROM feed_source WHERE source_name = ?")
-    .bind(agencyId)
-    .first<{ feed_source_id: number }>();
-
-  if (!source) {
-    throw new Error(`Feed source not found for agency: ${agencyId}`);
-  }
-
-  // 2. Get active feed_version_id
-  const version = await db
-    .prepare(
-      "SELECT feed_version_id FROM feed_version WHERE feed_source_id = ? AND is_active = 1",
-    )
-    .bind(source.feed_source_id)
-    .first<{ feed_version_id: number }>();
-
-  return {
-    feedSourceId: source.feed_source_id,
-    feedVersionId: version?.feed_version_id ?? null,
-  };
-}

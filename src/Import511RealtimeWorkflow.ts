@@ -4,15 +4,10 @@ import {
   type WorkflowStep,
 } from "cloudflare:workers";
 import { transit_realtime } from "./gtfs-realtime";
-import {
-  fetchAndDecodeFeed,
-  getFeedContext,
-  type RealtimeWorkflowEnv,
-} from "./realtime-utils";
+import { fetchAndDecodeFeed, type RealtimeWorkflowEnv } from "./realtime-utils";
 
 interface RealtimeWorkflowParams {
   agencyId: string;
-  waitTimeSeconds: number;
 }
 
 export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
@@ -23,36 +18,36 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
     event: Readonly<WorkflowEvent<RealtimeWorkflowParams>>,
     step: WorkflowStep,
   ) {
-    const { agencyId, waitTimeSeconds = 60 } = event.payload;
+    const { agencyId } = event.payload;
     const start = new Date(event.timestamp);
     const cutoff = new Date(start);
     cutoff.setUTCHours(start.getUTCHours() + 1, 0, 0, 0);
     const cutoffTime = cutoff.getTime();
 
+    // ~4 requests/minute: 2 requests per iteration with 15s sleep between each
+    const WAIT_SECONDS = 15;
+
     let iteration = 0;
 
-    console.log(
-      `[${agencyId}] Starting workflow. Wait time between calls: ${waitTimeSeconds}s`,
-    );
+    console.log(`[${agencyId}] Starting regional realtime workflow.`);
 
     while (Date.now() < cutoffTime) {
       iteration++;
       console.log(`[${agencyId}] Starting iteration ${iteration}`);
 
-      // --- Trip Updates ---
+      // --- Trip Updates (Regional) ---
       const tripUpdatesMetadata = await step.do(
-        `[${agencyId}] Sync TripUpdates - Iteration ${iteration}`,
+        `Sync TripUpdates - Iteration ${iteration}`,
         async () => {
-          console.log(`Fetching TripUpdates for ${agencyId}...`);
           const url = `https://api.511.org/transit/tripupdates?api_key=${this.env.API_KEY_511}&agency=${agencyId}`;
           const { message, rateLimitLimit, rateLimitRemaining } =
             await fetchAndDecodeFeed(url);
           console.log(
-            `Successfully fetched and decoded TripUpdates for ${agencyId}. Entities: ${message.entity?.length ?? 0}`,
+            `Fetched regional TripUpdates. Entities: ${message.entity?.length ?? 0}`,
           );
 
           if (rateLimitRemaining === 0) {
-            console.warn(`[${agencyId}] Rate limit reached. Exiting workflow.`);
+            console.warn("Rate limit reached. Exiting workflow.");
             return {
               rateLimitLimit,
               rateLimitRemaining,
@@ -61,15 +56,11 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
             };
           }
 
-          const { feedSourceId, feedVersionId } = await getFeedContext(
-            this.env.gtfs_data,
-            agencyId,
-          );
+          const tripIds = (message.entity || [])
+            .map((e) => e.tripUpdate?.trip?.tripId)
+            .filter((id): id is string => !!id);
 
-          if (!feedVersionId) {
-            console.warn(
-              `No active feed version for ${agencyId}. skipping processing.`,
-            );
+          if (tripIds.length === 0) {
             return {
               rateLimitLimit,
               rateLimitRemaining,
@@ -78,28 +69,37 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
             };
           }
 
-          const tripIds = (message.entity || [])
-            .map((e) => e.tripUpdate?.trip?.tripId)
-            .filter((id): id is string => !!id);
+          // Look up trips across all active feed versions to get trip_pk and feed_source_id
+          const uniqueTripIds = [...new Set(tripIds)];
+          const tripLookup = new Map<
+            string,
+            { tripPk: number; feedSourceId: number }
+          >();
+          const CHUNK_SIZE = 50;
 
-          const tripMap = new Map<string, number>();
-          if (tripIds.length > 0) {
-            const uniqueTripIds = [...new Set(tripIds)];
-            const CHUNK_SIZE = 50;
-            for (let j = 0; j < uniqueTripIds.length; j += CHUNK_SIZE) {
-              const chunk = uniqueTripIds.slice(j, j + CHUNK_SIZE);
-              const placeholders = chunk.map(() => "?").join(",");
-              const results = await this.env.gtfs_data
-                .prepare(
-                  `SELECT trip_id, trip_pk FROM trips WHERE feed_version_id = ? AND trip_id IN (${placeholders})`,
-                )
-                .bind(feedVersionId, ...chunk)
-                .all<{ trip_id: string; trip_pk: number }>();
+          for (let j = 0; j < uniqueTripIds.length; j += CHUNK_SIZE) {
+            const chunk = uniqueTripIds.slice(j, j + CHUNK_SIZE);
+            const placeholders = chunk.map(() => "?").join(",");
+            const results = await this.env.gtfs_data
+              .prepare(
+                `SELECT t.trip_id, t.trip_pk, fv.feed_source_id
+                 FROM trips t
+                 JOIN feed_version fv ON t.feed_version_id = fv.feed_version_id
+                 WHERE fv.is_active = 1 AND t.trip_id IN (${placeholders})`,
+              )
+              .bind(...chunk)
+              .all<{
+                trip_id: string;
+                trip_pk: number;
+                feed_source_id: number;
+              }>();
 
-              if (results.results) {
-                for (const row of results.results) {
-                  tripMap.set(row.trip_id, row.trip_pk);
-                }
+            if (results.results) {
+              for (const row of results.results) {
+                tripLookup.set(row.trip_id, {
+                  tripPk: row.trip_pk,
+                  feedSourceId: row.feed_source_id,
+                });
               }
             }
           }
@@ -109,45 +109,44 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
               VALUES (?, ?, ?, ?, ?, ?)
           `);
 
-          const batch = [];
+          const batch: D1PreparedStatement[] = [];
           const timestamp = message.header?.timestamp
             ? Number(message.header.timestamp)
             : Math.floor(Date.now() / 1000);
 
-          if (message.entity) {
-            for (const entity of message.entity) {
-              if (!entity.tripUpdate || !entity.tripUpdate.trip) continue;
-              const tripId = entity.tripUpdate.trip.tripId;
-              if (!tripId) continue;
-              const tripPk = tripMap.get(tripId) || null;
-              let effectiveDelay = entity.tripUpdate.delay || 0;
-              if (!effectiveDelay && entity.tripUpdate.stopTimeUpdate?.length) {
-                const firstUpdate = entity.tripUpdate.stopTimeUpdate[0];
-                effectiveDelay =
-                  firstUpdate.arrival?.delay ||
-                  firstUpdate.departure?.delay ||
-                  0;
-              }
+          for (const entity of message.entity || []) {
+            if (!entity.tripUpdate || !entity.tripUpdate.trip) continue;
+            const tripId = entity.tripUpdate.trip.tripId;
+            if (!tripId) continue;
 
-              let status = "SCHEDULED";
-              if (entity.tripUpdate.trip.scheduleRelationship) {
-                const rel = entity.tripUpdate.trip.scheduleRelationship;
-                if (rel === 1) status = "ADDED";
-                if (rel === 2) status = "UNSCHEDULED";
-                if (rel === 3) status = "CANCELED";
-              }
+            const lookup = tripLookup.get(tripId);
+            if (!lookup) continue;
 
-              batch.push(
-                stmt.bind(
-                  feedSourceId,
-                  tripId,
-                  tripPk,
-                  effectiveDelay,
-                  status,
-                  timestamp,
-                ),
-              );
+            let effectiveDelay = entity.tripUpdate.delay || 0;
+            if (!effectiveDelay && entity.tripUpdate.stopTimeUpdate?.length) {
+              const firstUpdate = entity.tripUpdate.stopTimeUpdate[0];
+              effectiveDelay =
+                firstUpdate.arrival?.delay || firstUpdate.departure?.delay || 0;
             }
+
+            let status = "SCHEDULED";
+            if (entity.tripUpdate.trip.scheduleRelationship) {
+              const rel = entity.tripUpdate.trip.scheduleRelationship;
+              if (rel === 1) status = "ADDED";
+              if (rel === 2) status = "UNSCHEDULED";
+              if (rel === 3) status = "CANCELED";
+            }
+
+            batch.push(
+              stmt.bind(
+                lookup.feedSourceId,
+                tripId,
+                lookup.tripPk,
+                effectiveDelay,
+                status,
+                timestamp,
+              ),
+            );
           }
 
           const BATCH_SIZE = 50;
@@ -169,24 +168,23 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
       }
 
       await step.sleep(
-        `[${agencyId}] Sleep after TripUpdates - Iteration ${iteration}`,
-        `${waitTimeSeconds} seconds`,
+        `Sleep after TripUpdates - Iteration ${iteration}`,
+        `${WAIT_SECONDS} seconds`,
       );
 
-      // --- Service Alerts ---
+      // --- Service Alerts (Regional) ---
       const serviceAlertsMetadata = await step.do(
-        `[${agencyId}] Sync ServiceAlerts - Iteration ${iteration}`,
+        `Sync ServiceAlerts - Iteration ${iteration}`,
         async () => {
-          console.log(`Fetching ServiceAlerts for ${agencyId}...`);
-          const url = `http://api.511.org/transit/servicealerts?api_key=${this.env.API_KEY_511}&agency=${agencyId}`;
+          const url = `https://api.511.org/transit/servicealerts?api_key=${this.env.API_KEY_511}&agency=${agencyId}`;
           const { message, rateLimitLimit, rateLimitRemaining } =
             await fetchAndDecodeFeed(url);
           console.log(
-            `Successfully fetched and decoded ServiceAlerts for ${agencyId}. Entities: ${message.entity?.length ?? 0}`,
+            `Fetched regional ServiceAlerts. Entities: ${message.entity?.length ?? 0}`,
           );
 
           if (rateLimitRemaining === 0) {
-            console.warn(`[${agencyId}] Rate limit reached. Exiting workflow.`);
+            console.warn("Rate limit reached. Exiting workflow.");
             return {
               rateLimitLimit,
               rateLimitRemaining,
@@ -195,51 +193,116 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
             };
           }
 
-          const { feedSourceId, feedVersionId } = await getFeedContext(
-            this.env.gtfs_data,
-            agencyId,
-          );
-
-          const currentAlertIds = new Set<string>();
-          for (const entity of message.entity || []) {
-            if (entity.alert && entity.id) {
-              currentAlertIds.add(entity.id);
-            }
-          }
-
-          const now = Math.floor(Date.now() / 1000);
-          const activeAlerts = await this.env.gtfs_data
+          // Build mapping: GTFS agency_id -> feed_source_id
+          const agencyToFeedSource = new Map<string, number>();
+          const agencyResults = await this.env.gtfs_data
             .prepare(
-              `SELECT alert_pk, alert_id FROM service_alerts 
-               WHERE feed_source_id = ? AND (end_time IS NULL OR end_time > ?)`,
+              `SELECT a.agency_id, fv.feed_source_id
+               FROM agency a
+               JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id
+               WHERE fv.is_active = 1`,
             )
-            .bind(feedSourceId, now)
-            .all<{ alert_pk: number; alert_id: string }>();
-
-          const alertsToClose: number[] = [];
-          if (activeAlerts.results) {
-            for (const row of activeAlerts.results) {
-              if (row.alert_id && !currentAlertIds.has(row.alert_id)) {
-                alertsToClose.push(row.alert_pk);
+            .all<{ agency_id: string; feed_source_id: number }>();
+          if (agencyResults.results) {
+            for (const row of agencyResults.results) {
+              if (row.agency_id) {
+                agencyToFeedSource.set(row.agency_id, row.feed_source_id);
               }
             }
           }
 
-          if (alertsToClose.length > 0) {
-            const closeStmt = this.env.gtfs_data.prepare(
-              "UPDATE service_alerts SET end_time = ? WHERE alert_pk = ?",
-            );
-            const closeBatch = alertsToClose.map((pk) =>
-              closeStmt.bind(now, pk),
-            );
-            const BATCH_SIZE = 50;
-            for (let j = 0; j < closeBatch.length; j += BATCH_SIZE) {
-              await this.env.gtfs_data.batch(
-                closeBatch.slice(j, j + BATCH_SIZE),
-              );
+          // Also map source_name -> feed_source_id as fallback
+          const sourceNameToFeedSource = new Map<string, number>();
+          const sourceResults = await this.env.gtfs_data
+            .prepare("SELECT feed_source_id, source_name FROM feed_source")
+            .all<{ feed_source_id: number; source_name: string }>();
+          if (sourceResults.results) {
+            for (const row of sourceResults.results) {
+              sourceNameToFeedSource.set(row.source_name, row.feed_source_id);
             }
           }
 
+          // Get all active feed_source_ids
+          const activeFeedSources = new Set<number>();
+          const activeResults = await this.env.gtfs_data
+            .prepare(
+              "SELECT DISTINCT feed_source_id FROM feed_version WHERE is_active = 1",
+            )
+            .all<{ feed_source_id: number }>();
+          if (activeResults.results) {
+            for (const row of activeResults.results) {
+              activeFeedSources.add(row.feed_source_id);
+            }
+          }
+
+          // Resolve feed_source_id from an informed entity's agencyId
+          const resolveFeedSourceId = (ie: {
+            agencyId?: string | null;
+          }): number | null => {
+            if (ie.agencyId) {
+              const fsId = agencyToFeedSource.get(ie.agencyId);
+              if (fsId) return fsId;
+              const fsId2 = sourceNameToFeedSource.get(ie.agencyId);
+              if (fsId2) return fsId2;
+            }
+            return null;
+          };
+
+          // Collect current alert IDs per feed_source from the regional feed
+          const currentAlertsBySource = new Map<number, Set<string>>();
+          for (const entity of message.entity || []) {
+            if (!entity.alert || !entity.id) continue;
+            for (const ie of entity.alert.informedEntity || []) {
+              const feedSourceId = resolveFeedSourceId(ie);
+              if (feedSourceId) {
+                if (!currentAlertsBySource.has(feedSourceId)) {
+                  currentAlertsBySource.set(feedSourceId, new Set());
+                }
+                currentAlertsBySource.get(feedSourceId)!.add(entity.id);
+              }
+            }
+          }
+
+          // Close alerts no longer in the regional feed
+          const now = Math.floor(Date.now() / 1000);
+          for (const feedSourceId of activeFeedSources) {
+            const currentIds =
+              currentAlertsBySource.get(feedSourceId) || new Set();
+
+            const activeAlerts = await this.env.gtfs_data
+              .prepare(
+                `SELECT alert_pk, alert_id FROM service_alerts
+                 WHERE feed_source_id = ? AND (end_time IS NULL OR end_time > ?)`,
+              )
+              .bind(feedSourceId, now)
+              .all<{ alert_pk: number; alert_id: string }>();
+
+            const alertsToClose: number[] = [];
+            if (activeAlerts.results) {
+              for (const row of activeAlerts.results) {
+                if (row.alert_id && !currentIds.has(row.alert_id)) {
+                  alertsToClose.push(row.alert_pk);
+                }
+              }
+            }
+
+            if (alertsToClose.length > 0) {
+              const closeStmt = this.env.gtfs_data.prepare(
+                "UPDATE service_alerts SET end_time = ? WHERE alert_pk = ?",
+              );
+              const closeBatch = alertsToClose.map((pk) =>
+                closeStmt.bind(now, pk),
+              );
+              const CLOSE_BATCH_SIZE = 50;
+              for (let j = 0; j < closeBatch.length; j += CLOSE_BATCH_SIZE) {
+                await this.env.gtfs_data.batch(
+                  closeBatch.slice(j, j + CLOSE_BATCH_SIZE),
+                );
+              }
+            }
+          }
+
+          // Resolve route/stop/trip PKs for alert entities across all active feeds
           const routeIds: string[] = [];
           const stopIds: string[] = [];
           const tripIds: string[] = [];
@@ -257,69 +320,72 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
           const stopMap = new Map<string, number>();
           const tripMap = new Map<string, number>();
 
-          if (feedVersionId) {
-            const CHUNK_SIZE = 50;
-            const uniqueRouteIds = [...new Set(routeIds)];
-            for (let j = 0; j < uniqueRouteIds.length; j += CHUNK_SIZE) {
-              const chunk = uniqueRouteIds.slice(j, j + CHUNK_SIZE);
-              if (!chunk.length) continue;
-              const placeholders = chunk.map(() => "?").join(",");
-              const results = await this.env.gtfs_data
-                .prepare(
-                  `SELECT route_id, route_pk FROM routes WHERE feed_version_id = ? AND route_id IN (${placeholders})`,
-                )
-                .bind(feedVersionId, ...chunk)
-                .all<{ route_id: string; route_pk: number }>();
-              if (results.results) {
-                for (const row of results.results)
-                  routeMap.set(row.route_id, row.route_pk);
-              }
-            }
+          const CHUNK_SIZE = 50;
 
-            const uniqueStopIds = [...new Set(stopIds)];
-            for (let j = 0; j < uniqueStopIds.length; j += CHUNK_SIZE) {
-              const chunk = uniqueStopIds.slice(j, j + CHUNK_SIZE);
-              if (!chunk.length) continue;
-              const placeholders = chunk.map(() => "?").join(",");
-              const results = await this.env.gtfs_data
-                .prepare(
-                  `SELECT stop_id, stop_pk FROM stops WHERE feed_version_id = ? AND stop_id IN (${placeholders})`,
-                )
-                .bind(feedVersionId, ...chunk)
-                .all<{ stop_id: string; stop_pk: number }>();
-              if (results.results) {
-                for (const row of results.results)
-                  stopMap.set(row.stop_id, row.stop_pk);
-              }
-            }
-
-            const uniqueTripIds = [...new Set(tripIds)];
-            for (let j = 0; j < uniqueTripIds.length; j += CHUNK_SIZE) {
-              const chunk = uniqueTripIds.slice(j, j + CHUNK_SIZE);
-              if (!chunk.length) continue;
-              const placeholders = chunk.map(() => "?").join(",");
-              const results = await this.env.gtfs_data
-                .prepare(
-                  `SELECT trip_id, trip_pk FROM trips WHERE feed_version_id = ? AND trip_id IN (${placeholders})`,
-                )
-                .bind(feedVersionId, ...chunk)
-                .all<{ trip_id: string; trip_pk: number }>();
-              if (results.results) {
-                for (const row of results.results)
-                  tripMap.set(row.trip_id, row.trip_pk);
-              }
+          const uniqueRouteIds = [...new Set(routeIds)];
+          for (let j = 0; j < uniqueRouteIds.length; j += CHUNK_SIZE) {
+            const chunk = uniqueRouteIds.slice(j, j + CHUNK_SIZE);
+            const placeholders = chunk.map(() => "?").join(",");
+            const results = await this.env.gtfs_data
+              .prepare(
+                `SELECT r.route_id, r.route_pk FROM routes r
+                 JOIN feed_version fv ON r.feed_version_id = fv.feed_version_id
+                 WHERE fv.is_active = 1 AND r.route_id IN (${placeholders})`,
+              )
+              .bind(...chunk)
+              .all<{ route_id: string; route_pk: number }>();
+            if (results.results) {
+              for (const row of results.results)
+                routeMap.set(row.route_id, row.route_pk);
             }
           }
 
+          const uniqueStopIds = [...new Set(stopIds)];
+          for (let j = 0; j < uniqueStopIds.length; j += CHUNK_SIZE) {
+            const chunk = uniqueStopIds.slice(j, j + CHUNK_SIZE);
+            const placeholders = chunk.map(() => "?").join(",");
+            const results = await this.env.gtfs_data
+              .prepare(
+                `SELECT s.stop_id, s.stop_pk FROM stops s
+                 JOIN feed_version fv ON s.feed_version_id = fv.feed_version_id
+                 WHERE fv.is_active = 1 AND s.stop_id IN (${placeholders})`,
+              )
+              .bind(...chunk)
+              .all<{ stop_id: string; stop_pk: number }>();
+            if (results.results) {
+              for (const row of results.results)
+                stopMap.set(row.stop_id, row.stop_pk);
+            }
+          }
+
+          const uniqueTripIds = [...new Set(tripIds)];
+          for (let j = 0; j < uniqueTripIds.length; j += CHUNK_SIZE) {
+            const chunk = uniqueTripIds.slice(j, j + CHUNK_SIZE);
+            const placeholders = chunk.map(() => "?").join(",");
+            const results = await this.env.gtfs_data
+              .prepare(
+                `SELECT t.trip_id, t.trip_pk FROM trips t
+                 JOIN feed_version fv ON t.feed_version_id = fv.feed_version_id
+                 WHERE fv.is_active = 1 AND t.trip_id IN (${placeholders})`,
+              )
+              .bind(...chunk)
+              .all<{ trip_id: string; trip_pk: number }>();
+            if (results.results) {
+              for (const row of results.results)
+                tripMap.set(row.trip_id, row.trip_pk);
+            }
+          }
+
+          // Insert alerts
           const stmt = this.env.gtfs_data.prepare(`
               INSERT INTO service_alerts (
-                  feed_source_id, alert_id, header, description, cause, effect, 
-                  start_time, end_time, severity_level, 
+                  feed_source_id, alert_id, header, description, cause, effect,
+                  start_time, end_time, severity_level,
                   affected_route_pk, affected_stop_pk, affected_trip_pk
               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `);
 
-          const batch = [];
+          const batch: D1PreparedStatement[] = [];
           for (const entity of message.entity || []) {
             if (!entity.alert) continue;
             const alertId = entity.id;
@@ -348,6 +414,9 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
                 ? a.informedEntity
                 : [{}];
             for (const ie of entities) {
+              const feedSourceId = resolveFeedSourceId(ie);
+              if (!feedSourceId) continue;
+
               const routePk = ie.routeId
                 ? routeMap.get(ie.routeId) || null
                 : null;
@@ -393,8 +462,8 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
       }
 
       await step.sleep(
-        `[${agencyId}] Sleep after ServiceAlerts - Iteration ${iteration}`,
-        `${waitTimeSeconds} seconds`,
+        `Sleep after ServiceAlerts - Iteration ${iteration}`,
+        `${WAIT_SECONDS} seconds`,
       );
     }
   }
