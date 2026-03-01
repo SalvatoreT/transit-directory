@@ -14,7 +14,7 @@
 # The first language is the default language and the respective language server will be used as a fallback.
 # Note that when using the JetBrains backend, language servers are not used and this list is correspondingly ignored.
 languages:
-- typescript
+  - typescript
 
 # the encoding used by text files in the project
 # For a list of possible encodings, see https://docs.python.org/3.11/library/codecs.html#standard-encodings
@@ -29,12 +29,12 @@ ignore_all_files_in_gitignore: true
 # Was previously called `ignored_dirs`, please update your config if you are using that.
 # Added (renamed) on 2025-04-07
 ignored_paths:
-- "worker-configuration.d.ts"
-- "src/gtfs-realtime.js"
-- "src/gtfs-realtime.d.ts"
-- "gtfs-realtime.proto"
-- "yarn.lock"
-- ".yarn/**"
+  - "worker-configuration.d.ts"
+  - "src/gtfs-realtime.js"
+  - "src/gtfs-realtime.d.ts"
+  - "gtfs-realtime.proto"
+  - "yarn.lock"
+  - ".yarn/**"
 
 # whether the project is in read-only mode
 # If set to true, all editing tools will be disabled and attempts to use them will result in an error
