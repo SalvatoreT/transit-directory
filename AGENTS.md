@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## Startup
+
+- **IMPORTANT**: Always activate the Serena MCP server at the start of every session. Use the `serena_activate_project` tool with `project_dir` set to `.` before doing any work.
+
 ## Project Structure & Module Organization
 
 - Source lives in `src/`: pages (`src/pages/index.astro`), shared layout (`src/layouts/Layout.astro`), worker entry (`src/worker.ts`), assets (`src/assets/`), and static files under `public/`.
@@ -30,6 +34,7 @@
 - TypeScript strict via `astro/tsconfigs/strict`; favor explicit types when uncertain.
 - Formatting: Prettier with `prettier-plugin-astro`. JSONC uses no trailing commas.
 - **IMPORTANT**: Always run `yarn format` when you're done making code changes.
+- **IMPORTANT**: Always run `yarn astro check && yarn lint` before completing any change to verify there are no type errors or formatting issues.
 - Astro components co-locate CSS; keep styles minimal and scoped. Use ASCII-only text.
 - Name files by role (`*.astro` for UI, `.ts` for worker/logic).
 
