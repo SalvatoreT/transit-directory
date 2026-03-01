@@ -1,5 +1,9 @@
 {
   "mcpServers": {
+    "cloudflare": {
+      "type": "url",
+      "url": "https://mcp.cloudflare.com/mcp"
+    },
     "serena": {
       "type": "stdio",
       "command": "uvx",
