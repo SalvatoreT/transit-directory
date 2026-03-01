@@ -28,7 +28,13 @@ ignore_all_files_in_gitignore: true
 # same syntax as gitignore, so you can use * and **
 # Was previously called `ignored_dirs`, please update your config if you are using that.
 # Added (renamed) on 2025-04-07
-ignored_paths: []
+ignored_paths:
+  - "worker-configuration.d.ts"
+  - "src/gtfs-realtime.js"
+  - "src/gtfs-realtime.d.ts"
+  - "gtfs-realtime.proto"
+  - "yarn.lock"
+  - ".yarn/**"
 
 # whether the project is in read-only mode
 # If set to true, all editing tools will be disabled and attempts to use them will result in an error
@@ -78,7 +84,23 @@ excluded_tools: []
 
 # initial prompt for the project. It will always be given to the LLM upon activating the project
 # (contrary to the memories, which are loaded on demand).
-initial_prompt: ""
+initial_prompt: |
+  Transit Directory is an Astro 5 + TypeScript web app deployed on Cloudflare Workers.
+  It displays GTFS transit data (agencies, routes, stops, trips, departures) sourced from 511.org.
+
+  Key architecture:
+  - Entry point: src/worker.ts (Cloudflare Worker with caching, route handling, cron)
+  - Pages: src/pages/ (Astro file-based routing; agency at /a/[agency_id], routes/stops/trips nested under it)
+  - Live collections: src/live.config.ts (runtime D1 queries via Astro experimental live content collections)
+  - GTFS import: src/Import511Workflow.ts (Cloudflare Workflow that fetches, unzips, and loads GTFS data into D1)
+  - Real-time import: src/Import511RealtimeWorkflow.ts (fetches GTFS-RT trip updates and service alerts)
+  - Components: src/components/ (AgencyRoutesView, AgencyStopsView, DepartureTime, StopHero)
+  - Layout: src/layouts/Layout.astro
+  - Database: Cloudflare D1 (binding gtfs_data), schema in migrations/ directory
+  - Docs: docs/gtfs-database.md (schema design), docs/gtfs-reference.md (GTFS spec, do not edit)
+
+  Commands: yarn dev, yarn build, yarn test, yarn lint, yarn format, yarn astro check
+  Package manager: Yarn 4. TypeScript strict mode. Prettier for formatting.
 # the name by which the project can be referenced within Serena
 project_name: "transit-directory"
 
