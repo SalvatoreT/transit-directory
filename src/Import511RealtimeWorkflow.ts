@@ -272,9 +272,12 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
             const activeAlerts = await this.env.gtfs_data
               .prepare(
                 `SELECT alert_pk, alert_id FROM service_alerts
-                 WHERE feed_source_id = ? AND (end_time IS NULL OR end_time > ?)`,
+                 WHERE feed_source_id = ? AND end_time > ?
+                 UNION ALL
+                 SELECT alert_pk, alert_id FROM service_alerts
+                 WHERE feed_source_id = ? AND end_time IS NULL`,
               )
-              .bind(feedSourceId, now)
+              .bind(feedSourceId, now, feedSourceId)
               .all<{ alert_pk: number; alert_id: string }>();
 
             const alertsToClose: number[] = [];
