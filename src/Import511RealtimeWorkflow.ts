@@ -265,6 +265,25 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
 
           // Close alerts no longer in the regional feed
           const now = Math.floor(Date.now() / 1000);
+
+          // Purge expired alerts (closed more than 24h ago) to keep the table small.
+          // This runs BEFORE the active-alerts query so it benefits immediately.
+          const EXPIRED_CUTOFF = now - 86400; // 24 hours ago
+          const DELETE_LIMIT = 1000; // cap per feed_source to avoid long txns
+          for (const feedSourceId of activeFeedSources) {
+            await this.env.gtfs_data
+              .prepare(
+                `DELETE FROM service_alerts
+                 WHERE alert_pk IN (
+                   SELECT alert_pk FROM service_alerts
+                   WHERE feed_source_id = ? AND end_time IS NOT NULL AND end_time < ?
+                   LIMIT ?
+                 )`,
+              )
+              .bind(feedSourceId, EXPIRED_CUTOFF, DELETE_LIMIT)
+              .run();
+          }
+
           for (const feedSourceId of activeFeedSources) {
             const currentIds =
               currentAlertsBySource.get(feedSourceId) || new Set();
