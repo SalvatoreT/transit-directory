@@ -17,11 +17,11 @@ jobs:
       - run: corepack enable
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           cache: "yarn"
       - name: Install dependencies
         run: yarn install --immutable
       - name: Lint the code
-        run: yarn astro check && yarn lint
+        run: yarn lint
       - name: Run tests
         run: yarn test

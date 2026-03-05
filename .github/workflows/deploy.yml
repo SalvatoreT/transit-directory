@@ -22,10 +22,12 @@ jobs:
       - run: corepack enable
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           cache: "yarn"
       - name: Install dependencies
         run: yarn install --immutable
+      - name: Build
+        run: yarn build
       - name: Create Preview on Cloudflare
         if: github.ref != 'refs/heads/main'
         id: wrangler-preview
@@ -33,7 +35,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: versions upload
+          command: versions upload --config dist/server/wrangler.json
           # gitHubToken: ${{ secrets.GITHUB_TOKEN }}
       - name: Deploy to Cloudflare
         if: github.ref == 'refs/heads/main'
@@ -41,7 +43,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
+          command: deploy --config dist/server/wrangler.json
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
       - name: Add PR comment with preview URL
         if: github.event_name == 'pull_request'
