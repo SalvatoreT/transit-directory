@@ -3,33 +3,39 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
-    "astro": "astro",
+    "dev": "vinext dev",
+    "build": "vinext build",
+    "preview": "vinext start",
+    "deploy": "vinext deploy",
     "test": "vitest run",
     "lint": "prettier --check .",
     "format": "prettier --write .",
     "generate-types": "wrangler types"
   },
   "dependencies": {
-    "@astrojs/check": "0.9.6",
-    "@astrojs/cloudflare": "12.6.12",
-    "@astrojs/ts-plugin": "1.10.6",
-    "astro": "5.16.6",
+    "@vitejs/plugin-rsc": "^0.5.21",
     "jszip": "^3.10.1",
     "luxon": "^3.7.2",
+    "next": "16.1.6",
     "protobufjs": "^8.0.0",
-    "typescript": "^5.9.3"
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "typescript": "^5.9.3",
+    "vinext": "^0.0.11"
   },
   "packageManager": "yarn@4.12.0",
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.25.5",
     "@types/jszip": "^3.4.1",
     "@types/luxon": "^3.7.1",
     "@types/node": "^25.0.3",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
     "prettier": "^3.7.4",
-    "prettier-plugin-astro": "0.14.1",
     "protobufjs-cli": "^2.0.0",
+    "react-server-dom-webpack": "^19.2.4",
+    "vite": "^7.3.1",
     "vitest": "^4.0.16",
-    "wrangler": "^4.56.0"
+    "wrangler": "^4.68.1"
   }
 }

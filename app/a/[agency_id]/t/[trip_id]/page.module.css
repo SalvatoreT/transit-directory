@@ -1,0 +1,113 @@
+.main {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem;
+  font-family: system-ui, sans-serif;
+}
+
+.header {
+  margin-bottom: 2rem;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 2rem;
+}
+
+.navLinks {
+  margin-bottom: 1rem;
+  color: #666;
+}
+
+.backLink {
+  color: #0066cc;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.backLink:hover {
+  text-decoration: underline;
+}
+
+.sep {
+  margin: 0 0.5rem;
+  color: #ccc;
+}
+
+.tripHeader {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.title {
+  font-size: 2rem;
+  margin: 0;
+}
+
+.routePill {
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  font-weight: bold;
+  min-width: 3rem;
+  text-align: center;
+  font-size: 1.5rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.subtitle {
+  color: #666;
+  margin: 0;
+}
+
+.stopsList {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.stopRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+}
+
+.stopRow:last-child {
+  border-bottom: none;
+}
+
+.pastStop {
+  opacity: 0.5;
+  background-color: #f9f9f9;
+}
+
+.selectedStop {
+  background-color: #fff8e1;
+}
+
+.stopInfo {
+  flex: 1;
+}
+
+.stopLink {
+  text-decoration: none;
+  color: #000;
+  font-weight: 500;
+}
+
+.stopLink:hover {
+  color: #0066cc;
+  text-decoration: underline;
+}
+
+.stopTimes {
+  display: flex;
+  gap: 1.5rem;
+}

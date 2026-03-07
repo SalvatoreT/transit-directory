@@ -1,1 +1,3 @@
 worker-configuration.d.ts
+src/gtfs-realtime.js
+src/gtfs-realtime.d.ts

@@ -1,0 +1,45 @@
+.main {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem;
+  font-family: system-ui, sans-serif;
+}
+
+.title {
+  font-size: 2.5rem;
+  margin-bottom: 2rem;
+}
+
+.agencyList {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 1rem;
+}
+
+.agencyList li {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s;
+}
+
+.agencyList li:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.agencyList a {
+  display: block;
+  padding: 1.5rem;
+  text-decoration: none;
+  color: #111827;
+  font-weight: 500;
+  font-size: 1.1rem;
+}
+
+.agencyList a:hover {
+  color: #3245ff;
+}

@@ -1,16 +1,21 @@
 {
-  "extends": "astro/tsconfigs/strict",
-  "include": [".astro/types.d.ts", "**/*"],
-  "exclude": ["dist", "src/gtfs-realtime.js"],
   "compilerOptions": {
+    "strict": true,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "types": ["./worker-configuration.d.ts", "node", "vitest"],
     "paths": {
       "@cloudflare/workers-types": ["./worker-configuration.d.ts"]
     },
-    "plugins": [
-      {
-        "name": "@astrojs/ts-plugin"
-      }
-    ]
-  }
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true
+  },
+  "include": ["app", "src", "worker", "worker-configuration.d.ts"],
+  "exclude": ["node_modules", "dist", "src/gtfs-realtime.js"]
 }

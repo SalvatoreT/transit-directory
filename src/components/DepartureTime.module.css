@@ -1,0 +1,40 @@
+.timeLink {
+  text-decoration: none;
+  color: inherit;
+}
+
+.timeLink:hover {
+  opacity: 0.8;
+}
+
+.timePill {
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: #f0f0f0;
+  color: #555;
+  white-space: nowrap;
+  display: inline-block;
+}
+
+.scheduled {
+  background: #f0f0f0;
+  color: #555;
+}
+
+.delayed {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.early {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.onTime {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
