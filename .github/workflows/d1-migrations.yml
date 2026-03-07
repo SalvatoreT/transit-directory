@@ -1,6 +1,10 @@
 name: Apply D1 Migrations
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "migrations/**"
   workflow_dispatch:
 
 jobs:
