@@ -39,9 +39,6 @@
       "class_name": "Import511RealtimeWorkflow"
     }
   ],
-  "vars": {
-    "TURNSTILE_SITE_KEY": "<your-site-key-here>"
-  },
   "r2_buckets": [
     {
       "bucket_name": "gtfs-processing",
