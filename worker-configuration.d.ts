@@ -10,8 +10,6 @@ declare namespace Cloudflare {
 		API_KEY_511: string;
 		gtfs_processing: R2Bucket;
 		gtfs_data: D1Database;
-		TURNSTILE_SITE_KEY: string;
-		TURNSTILE_SECRET_KEY: string;
 		ASSETS: Fetcher;
 		IMPORT_511_WORKFLOW: Workflow<Parameters<import("./dist/_worker.js/index").Import511Workflow['run']>[0]['payload']>;
 		IMPORT_REALTIME_WORKFLOW: Workflow<Parameters<import("./dist/_worker.js/index").Import511RealtimeWorkflow['run']>[0]['payload']>;
@@ -22,7 +20,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "API_KEY_511" | "TURNSTILE_SITE_KEY">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "API_KEY_511">> {}
 }
 
 // Begin runtime types
