@@ -26,6 +26,7 @@
   "packageManager": "yarn@4.12.0",
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.25.5",
+    "@fission-ai/openspec": "^1.2.0",
     "@types/jszip": "^3.4.1",
     "@types/luxon": "^3.7.1",
     "@types/node": "^25.0.3",
