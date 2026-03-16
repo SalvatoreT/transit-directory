@@ -6,6 +6,12 @@ import {
 import { transit_realtime } from "./gtfs-realtime";
 import { fetchAndDecodeFeed, type RealtimeWorkflowEnv } from "./realtime-utils";
 
+// Sentinel value for alerts with no end time (year 9999 epoch).
+// Allows the composite index on (feed_source_id, end_time) to satisfy
+// `end_time > ?` as a single contiguous range scan instead of needing
+// `end_time > ? OR end_time IS NULL` which defeats the index.
+const NO_END_TIME = 253402300799;
+
 interface RealtimeWorkflowParams {
   agencyId: string;
 }
@@ -276,7 +282,7 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
                 `DELETE FROM service_alerts
                  WHERE alert_pk IN (
                    SELECT alert_pk FROM service_alerts
-                   WHERE feed_source_id = ? AND end_time IS NOT NULL AND end_time < ?
+                   WHERE feed_source_id = ? AND end_time < ?
                    LIMIT ?
                  )`,
               )
@@ -291,7 +297,7 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
             const activeAlerts = await this.env.gtfs_data
               .prepare(
                 `SELECT alert_pk, alert_id FROM service_alerts
-                 WHERE feed_source_id = ? AND (end_time > ? OR end_time IS NULL)`,
+                 WHERE feed_source_id = ? AND end_time > ?`,
               )
               .bind(feedSourceId, now)
               .all<{ alert_pk: number; alert_id: string }>();
@@ -419,7 +425,7 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
             const header = getText(a.headerText);
             const description = getText(a.descriptionText);
             let startTime: number | null = null;
-            let endTime: number | null = null;
+            let endTime: number = NO_END_TIME;
             if (a.activePeriod && a.activePeriod.length > 0) {
               const p = a.activePeriod[0];
               if (p.start) startTime = Math.floor(Number(p.start));
