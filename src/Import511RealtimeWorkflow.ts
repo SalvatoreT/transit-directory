@@ -269,42 +269,31 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
             }
           }
 
-          // Close alerts no longer in the regional feed
+          // Close alerts no longer present in the regional feed.
+          // Only query feed sources that appeared in the current poll to avoid
+          // scanning all ~193 feed sources every iteration.
           const now = Math.floor(Date.now() / 1000);
 
-          // Purge expired alerts (closed more than 24h ago) to keep the table small.
-          // This runs BEFORE the active-alerts query so it benefits immediately.
-          const EXPIRED_CUTOFF = now - 86400; // 24 hours ago
-          const DELETE_LIMIT = 1000; // cap per feed_source to avoid long txns
-          for (const feedSourceId of activeFeedSources) {
-            await this.env.gtfs_data
-              .prepare(
-                `DELETE FROM service_alerts
-                 WHERE alert_pk IN (
-                   SELECT alert_pk FROM service_alerts
-                   WHERE feed_source_id = ? AND end_time < ?
-                   LIMIT ?
-                 )`,
-              )
-              .bind(feedSourceId, EXPIRED_CUTOFF, DELETE_LIMIT)
-              .run();
-          }
-
-          for (const feedSourceId of activeFeedSources) {
-            const currentIds =
-              currentAlertsBySource.get(feedSourceId) || new Set();
-
+          const feedSourcesWithAlerts = [...currentAlertsBySource.keys()];
+          if (feedSourcesWithAlerts.length > 0) {
+            const placeholders = feedSourcesWithAlerts.map(() => "?").join(",");
             const activeAlerts = await this.env.gtfs_data
               .prepare(
-                `SELECT alert_pk, alert_id FROM service_alerts
-                 WHERE feed_source_id = ? AND end_time > ?`,
+                `SELECT alert_pk, alert_id, feed_source_id FROM service_alerts
+                 WHERE feed_source_id IN (${placeholders}) AND end_time > ?`,
               )
-              .bind(feedSourceId, now)
-              .all<{ alert_pk: number; alert_id: string }>();
+              .bind(...feedSourcesWithAlerts, now)
+              .all<{
+                alert_pk: number;
+                alert_id: string;
+                feed_source_id: number;
+              }>();
 
             const alertsToClose: number[] = [];
             if (activeAlerts.results) {
               for (const row of activeAlerts.results) {
+                const currentIds =
+                  currentAlertsBySource.get(row.feed_source_id) || new Set();
                 if (row.alert_id && !currentIds.has(row.alert_id)) {
                   alertsToClose.push(row.alert_pk);
                 }
