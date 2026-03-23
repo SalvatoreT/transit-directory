@@ -72,6 +72,44 @@ async function triggerStaticFeedUpdates(env: Env) {
   }
 }
 
+// Sentinel value for alerts with no end time (year 9999 epoch).
+const NO_END_TIME = 253402300799;
+
+async function cleanupServiceAlerts(env: Env) {
+  const now = Math.floor(Date.now() / 1000);
+
+  // Auto-close alerts that have been open (sentinel end_time) for over 24 hours
+  // based on their start_time. These are likely stale.
+  const STALE_THRESHOLD = now - 86400; // 24 hours ago
+  const autoCloseResult = await env.gtfs_data
+    .prepare(
+      `UPDATE service_alerts SET end_time = ?
+       WHERE end_time = ? AND start_time IS NOT NULL AND start_time < ?`,
+    )
+    .bind(now, NO_END_TIME, STALE_THRESHOLD)
+    .run();
+  console.log(
+    `[cleanup] Auto-closed ${autoCloseResult.meta.changes} stale alerts.`,
+  );
+
+  // Purge alerts that ended more than 7 days ago.
+  const PURGE_CUTOFF = now - 7 * 86400;
+  const purgeResult = await env.gtfs_data
+    .prepare(
+      `DELETE FROM service_alerts
+       WHERE alert_pk IN (
+         SELECT alert_pk FROM service_alerts
+         WHERE end_time < ? AND end_time != ${NO_END_TIME}
+         LIMIT 5000
+       )`,
+    )
+    .bind(PURGE_CUTOFF)
+    .run();
+  console.log(
+    `[cleanup] Purged ${purgeResult.meta.changes} expired alerts (ended >7d ago).`,
+  );
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     return handler.fetch(request, env, ctx);
@@ -84,6 +122,8 @@ export default {
       ctx.waitUntil(triggerStaticFeedUpdates(env));
     } else {
       ctx.waitUntil(triggerRealtimeWorkflow(env));
+      // Run alert cleanup alongside realtime workflow (hourly)
+      ctx.waitUntil(cleanupServiceAlerts(env));
     }
   },
 } satisfies ExportedHandler<Env>;
