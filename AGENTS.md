@@ -50,6 +50,7 @@
 
 - **IMPORTANT**: Do NOT commit code unless explicitly instructed to do so by the user.
 - Commit messages: short, imperative summaries (e.g., "add GTFS schema notes", "fix worker cron logging").
+- **IMPORTANT**: Squash to exactly one commit per pull request before pushing. Use `git reset --soft $(git merge-base HEAD main)` then `git commit` to squash.
 - Pull requests: describe the change, link issues/tasks, note testing (`yarn test`, `yarn build` when relevant), and include screenshots for UI changes if applicable.
 
 ## Security & Configuration Tips

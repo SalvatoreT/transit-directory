@@ -55,7 +55,7 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `🚀 Your preview environment is ready! Check it out here: ${deploymentUrl}`
+              body: `🚀 Your preview environment is ready! Check it out here: ${deploymentUrl}\n\n📺 TRMNL plugin example layouts: ${deploymentUrl}/api/trmnl/example`
             });
         env:
           DEPLOYMENT_URL: ${{ steps.wrangler-preview.outputs.deployment-url }}
