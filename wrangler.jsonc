@@ -25,6 +25,10 @@
     {
       "binding": "SESSION",
       "id": "96d1374577344c278ecf8978ca4a0ab4"
+    },
+    {
+      "binding": "TRMNL_USERS",
+      "id": "53f92c92f7c74c43be5ad0c3bbb2b889"
     }
   ],
   "workflows": [
