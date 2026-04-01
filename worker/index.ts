@@ -28,14 +28,28 @@ async function triggerRealtimeWorkflow(env: Env) {
 
 async function triggerStaticFeedUpdates(env: Env) {
   const result = await env.gtfs_data
-    .prepare("SELECT source_name FROM feed_source")
-    .all<{ source_name: string }>();
+    .prepare(
+      `SELECT fs.source_name, fv.feed_end_date
+       FROM feed_source fs
+       LEFT JOIN feed_version fv
+         ON fs.feed_source_id = fv.feed_source_id AND fv.is_active = 1`,
+    )
+    .all<{ source_name: string; feed_end_date: number | null }>();
 
   const agencies = result.results || [];
 
   if (agencies.length === 0) {
     console.log("[cron] No feed sources found, skipping static feed updates.");
     return;
+  }
+
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  for (const agency of agencies) {
+    if (agency.feed_end_date && agency.feed_end_date < nowEpoch) {
+      console.warn(
+        `[cron] Feed for ${agency.source_name} has expired (feed_end_date ${new Date(agency.feed_end_date * 1000).toISOString()}). Will attempt re-import.`,
+      );
+    }
   }
 
   console.log(

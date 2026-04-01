@@ -350,6 +350,57 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
               throw new Error("Failed to find existing feed_version_id");
             feedVersionId = existing.feed_version_id;
 
+            // Check if the existing version actually has data (trips).
+            // A previous import may have inserted the feed_version row but
+            // failed before finishing data import.  In that case we must
+            // re-import rather than silently serving incomplete data.
+            const tripCount = await this.env.gtfs_data
+              .prepare(
+                "SELECT COUNT(*) as cnt FROM trips WHERE feed_version_id = ?",
+              )
+              .bind(feedVersionId)
+              .first<{ cnt: number }>();
+
+            if (!tripCount || tripCount.cnt === 0) {
+              console.log(
+                `[Import511] Existing version ${versionLabel} has no trips -- treating as new version.`,
+              );
+              isNewVersion = true;
+            } else {
+              // Check if all calendar service has expired
+              const nowEpoch = Math.floor(Date.now() / 1000);
+              const activeCalendar = await this.env.gtfs_data
+                .prepare(
+                  `SELECT COUNT(*) as cnt FROM calendar
+                   WHERE feed_version_id = ? AND end_date >= ?`,
+                )
+                .bind(feedVersionId, nowEpoch)
+                .first<{ cnt: number }>();
+
+              const activeCalendarDates = await this.env.gtfs_data
+                .prepare(
+                  `SELECT COUNT(*) as cnt FROM calendar_dates
+                   WHERE feed_version_id = ? AND date >= ? AND exception_type = 1`,
+                )
+                .bind(feedVersionId, nowEpoch)
+                .first<{ cnt: number }>();
+
+              const hasActiveService =
+                (activeCalendar?.cnt ?? 0) > 0 ||
+                (activeCalendarDates?.cnt ?? 0) > 0;
+
+              if (!hasActiveService) {
+                console.warn(
+                  `[Import511] All calendar data for ${versionLabel} has expired -- forcing re-import.`,
+                );
+                isNewVersion = true;
+              } else {
+                console.log(
+                  `[Import511] Version ${versionLabel} already exists with ${tripCount.cnt} trips and active service. Skipping import.`,
+                );
+              }
+            }
+
             // Ensure it is active
             await this.env.gtfs_data
               .prepare(
