@@ -12,6 +12,13 @@ import { fetchAndDecodeFeed, type RealtimeWorkflowEnv } from "./realtime-utils";
 // `end_time > ? OR end_time IS NULL` which defeats the index.
 const NO_END_TIME = 253402300799;
 
+// Regional feeds prefix trip/route/stop IDs with "{agency}:" (e.g. "BA:1841778").
+// Static GTFS stores them without the prefix, so we strip it before DB lookups.
+function stripAgencyPrefix(id: string): string {
+  const idx = id.indexOf(":");
+  return idx >= 0 ? id.substring(idx + 1) : id;
+}
+
 interface RealtimeWorkflowParams {
   agencyId: string;
 }
@@ -64,7 +71,8 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
 
           const tripIds = (message.entity || [])
             .map((e) => e.tripUpdate?.trip?.tripId)
-            .filter((id): id is string => !!id);
+            .filter((id): id is string => !!id)
+            .map(stripAgencyPrefix);
 
           if (tripIds.length === 0) {
             return {
@@ -122,9 +130,10 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
 
           for (const entity of message.entity || []) {
             if (!entity.tripUpdate || !entity.tripUpdate.trip) continue;
-            const tripId = entity.tripUpdate.trip.tripId;
-            if (!tripId) continue;
+            const rawTripId = entity.tripUpdate.trip.tripId;
+            if (!rawTripId) continue;
 
+            const tripId = stripAgencyPrefix(rawTripId);
             const lookup = tripLookup.get(tripId);
             if (!lookup) continue;
 
