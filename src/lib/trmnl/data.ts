@@ -37,7 +37,7 @@ function formatDeparture(
 ): TrmnlDeparture {
   const midnight = DateTime.now().setZone(timezone).startOf("day");
   const depTime = midnight.plus({ seconds: dep.departure_time });
-  const timeStr = depTime.toFormat("h:mm a");
+  const timeStr = depTime.toFormat("HH:mm");
 
   let delayText = "Sched.";
   if (dep.delay != null) {

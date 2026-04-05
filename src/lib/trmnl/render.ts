@@ -33,10 +33,39 @@ function page(
   count: number,
   screen: ScreenSize = SCREEN_OG,
 ): string {
+  const s = (px: number) => Math.round(px * (screen.width / SCREEN_OG.width));
   const sizeOverride =
     screen === SCREEN_OG
       ? ""
-      : `\n  <style>:root { --screen-w: ${screen.width}px; --screen-h: ${screen.height}px; }</style>`;
+      : `\n  <style>:root {
+    --screen-w: ${screen.width}px;
+    --screen-h: ${screen.height}px;
+    --gap-xsmall: ${s(5)}px;
+    --gap-small: ${s(7)}px;
+    --gap: ${s(10)}px;
+    --gap-medium: ${s(16)}px;
+    --gap-large: ${s(20)}px;
+    --gap-xlarge: ${s(30)}px;
+    --gap-xxlarge: ${s(40)}px;
+    --title-font-size: ${s(26)}px;
+    --title-small-font-size: ${s(16)}px;
+    --title-large-font-size: ${s(30)}px;
+    --title-xlarge-font-size: ${s(35)}px;
+    --title-xxlarge-font-size: ${s(40)}px;
+    --label-font-size: ${s(16)}px;
+    --label-small-font-size: ${s(16)}px;
+    --label-large-font-size: ${s(21)}px;
+    --label-xlarge-font-size: ${s(26)}px;
+    --label-xxlarge-font-size: ${s(30)}px;
+    --description-font-size: ${s(16)}px;
+    --description-large-font-size: ${s(16)}px;
+    --description-xlarge-font-size: ${s(21)}px;
+    --item-meta-width: ${s(10)}px;
+    --item-index-font-size: ${s(16)}px;
+    --title-bar-font-size: ${s(16)}px;
+    --list-gap-small: ${s(8)}px;
+    --list-gap-large: ${s(16)}px;
+  }</style>`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -68,15 +97,16 @@ function noDepartures(msg = "No upcoming departures"): string {
   </div>`;
 }
 
-function departureItem(dep: TrmnlDeparture, emphasis: number = 1): string {
-  const delayPart =
-    dep.delayText !== "Sched."
-      ? ` <span class="label${delayLabelClass(dep.delayText)}">${esc(dep.delayText)}</span>`
-      : "";
+function delayLabel(dep: TrmnlDeparture): string {
+  if (dep.delayText === "Sched.") return "";
+  return `<span class="label${delayLabelClass(dep.delayText)}" style="white-space: nowrap; display: inline-block; font-size: calc(var(--title-font-size) * 0.55);">${esc(dep.delayText)}</span>`;
+}
+
+function departureItem(dep: TrmnlDeparture, emphasis: number = 3): string {
   return `<div class="item item--emphasis-${emphasis}">
-    <div class="meta"></div>
+    <div class="meta" style="min-width: 5em; width: auto; background: transparent; text-align: center; flex-direction: column;"><span class="title" style="font-family: monospace; display: block;">${esc(dep.time)}</span>${delayLabel(dep)}</div>
     <div class="content">
-      <span class="title">${esc(dep.routeName)} &mdash; ${esc(dep.time)}${delayPart}</span>
+      <span class="title">${esc(dep.routeName)}</span>
       <span class="label label--underline">${esc(dep.headsign)}</span>
     </div>
   </div>`;
@@ -84,16 +114,12 @@ function departureItem(dep: TrmnlDeparture, emphasis: number = 1): string {
 
 function departureItemCompact(
   dep: TrmnlDeparture,
-  emphasis: number = 1,
+  emphasis: number = 2,
 ): string {
-  const delayPart =
-    dep.delayText !== "Sched."
-      ? ` <span class="label${delayLabelClass(dep.delayText)}">${esc(dep.delayText)}</span>`
-      : "";
   return `<div class="item item--emphasis-${emphasis}">
-    <div class="meta"></div>
+    <div class="meta" style="min-width: 5em; width: auto; background: transparent; text-align: center; flex-direction: column;"><span class="title" style="font-family: monospace; display: block;">${esc(dep.time)}</span>${delayLabel(dep)}</div>
     <div class="content">
-      <span class="title">${esc(dep.routeName)} &mdash; ${esc(dep.time)}${delayPart}</span>
+      <span class="title">${esc(dep.routeName)}</span>
       <span class="label">${esc(dep.headsign)}</span>
     </div>
   </div>`;
@@ -105,7 +131,7 @@ export function renderFull(
   data: TrmnlStopData,
   screen: ScreenSize = SCREEN_OG,
 ): string {
-  const deps = data.departures.slice(0, 5);
+  const deps = data.departures.slice(0, 8);
 
   if (deps.length === 0) {
     return page(
@@ -117,8 +143,8 @@ export function renderFull(
     );
   }
 
-  const items = deps.map((d) => departureItem(d, 1)).join("\n    ");
-  const inner = `<div class="grid grid--cols-1 gap--small">
+  const items = deps.map((d) => departureItem(d)).join("\n    ");
+  const inner = `<div class="grid grid--cols-2 gap--small">
     ${items}
   </div>`;
   return page("view--full", inner, data.stopName, data.departureCount, screen);
@@ -142,8 +168,8 @@ export function renderHalfHorizontal(
     );
   }
 
-  const items = deps.map((d) => departureItemCompact(d, 1)).join("\n    ");
-  const inner = `<div class="grid grid--cols-1 gap--small">
+  const items = deps.map((d) => departureItemCompact(d)).join("\n    ");
+  const inner = `<div class="grid grid--cols-2 gap--small">
     ${items}
   </div>`;
   return page(
@@ -173,7 +199,7 @@ export function renderHalfVertical(
     );
   }
 
-  const items = deps.map((d) => departureItem(d, 1)).join("\n    ");
+  const items = deps.map((d) => departureItem(d)).join("\n    ");
   const inner = `<div class="grid grid--cols-1 gap--small">
     ${items}
   </div>`;
@@ -200,9 +226,9 @@ export function renderQuadrant(
   if (!next) {
     inner = noDepartures("No departures");
   } else {
-    const nextItem = departureItem(next, 3);
+    const nextItem = departureItem(next);
     const restItems = remaining
-      .map((d) => departureItemCompact(d, 1))
+      .map((d) => departureItemCompact(d))
       .join("\n    ");
 
     inner = `<div class="grid grid--cols-1 gap--small">
