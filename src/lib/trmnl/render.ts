@@ -144,7 +144,8 @@ export function renderFull(
   }
 
   const items = deps.map((d) => departureItem(d)).join("\n    ");
-  const inner = `<div class="grid grid--cols-2 gap--small">
+  const rows = Math.ceil(deps.length / 2);
+  const inner = `<div class="grid grid--cols-2 gap--small" style="grid-auto-flow: column; grid-template-rows: repeat(${rows}, auto);">
     ${items}
   </div>`;
   return page("view--full", inner, data.stopName, data.departureCount, screen);
@@ -169,7 +170,8 @@ export function renderHalfHorizontal(
   }
 
   const items = deps.map((d) => departureItemCompact(d)).join("\n    ");
-  const inner = `<div class="grid grid--cols-2 gap--small">
+  const rows = Math.ceil(deps.length / 2);
+  const inner = `<div class="grid grid--cols-2 gap--small" style="grid-auto-flow: column; grid-template-rows: repeat(${rows}, auto);">
     ${items}
   </div>`;
   return page(
