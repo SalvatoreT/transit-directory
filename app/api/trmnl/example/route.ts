@@ -4,6 +4,7 @@ import {
   renderHalfHorizontal,
   renderHalfVertical,
   renderQuadrant,
+  SCREEN_X,
 } from "../../../../src/lib/trmnl/render";
 
 const SAMPLE_DATA: TrmnlStopData = {
@@ -122,6 +123,11 @@ export async function GET() {
   const halfVHtml = renderHalfVertical(SAMPLE_DATA);
   const quadHtml = renderQuadrant(SAMPLE_DATA);
 
+  const fullXHtml = renderFull(SAMPLE_DATA, SCREEN_X);
+  const halfHXHtml = renderHalfHorizontal(SAMPLE_DATA, SCREEN_X);
+  const halfVXHtml = renderHalfVertical(SAMPLE_DATA, SCREEN_X);
+  const quadXHtml = renderQuadrant(SAMPLE_DATA, SCREEN_X);
+
   const page = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -174,10 +180,10 @@ export async function GET() {
 
   <div class="device-section">
     <h2 class="device-title">TRMNL X <span class="device-badge">1872&times;1404 &middot; 16-level Grayscale</span></h2>
-    ${layoutIframe("Full", fullHtml, 1872, 1404, 0.75)}
-    ${layoutIframe("Half Horizontal", halfHHtml, 1872, 702, 0.75)}
-    ${layoutIframe("Half Vertical", halfVHtml, 936, 1404, 0.75)}
-    ${layoutIframe("Quadrant", quadHtml, 936, 702, 0.75)}
+    ${layoutIframe("Full", fullXHtml, 1872, 1404, 0.75)}
+    ${layoutIframe("Half Horizontal", halfHXHtml, 1872, 702, 0.75)}
+    ${layoutIframe("Half Vertical", halfVXHtml, 936, 1404, 0.75)}
+    ${layoutIframe("Quadrant", quadXHtml, 936, 702, 0.75)}
   </div>
 </body>
 </html>`;

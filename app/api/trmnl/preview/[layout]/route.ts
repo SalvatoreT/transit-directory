@@ -1,5 +1,5 @@
 import { getTrmnlData } from "../../../../../src/lib/trmnl/data";
-import { renderLayout } from "../../../../../src/lib/trmnl/render";
+import { renderLayout, SCREEN_X } from "../../../../../src/lib/trmnl/render";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +34,9 @@ export async function GET(
   }
 
   const data = await getTrmnlData(agencyId, stopId);
-  const html = renderLayout(layout, data);
+  const device = url.searchParams.get("device");
+  const screen = device === "x" ? SCREEN_X : undefined;
+  const html = renderLayout(layout, data, screen);
 
   return new Response(html, {
     headers: { "Content-Type": "text/html; charset=utf-8" },

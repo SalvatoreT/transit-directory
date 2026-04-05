@@ -3,7 +3,7 @@ import {
   getTrmnlData,
   type TrmnlUserConfig,
 } from "../../../../src/lib/trmnl/data";
-import { renderLayout } from "../../../../src/lib/trmnl/render";
+import { renderLayout, SCREEN_X } from "../../../../src/lib/trmnl/render";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +40,18 @@ export async function POST(request: Request) {
       markup_half_horizontal: renderLayout("half_horizontal", emptyData),
       markup_half_vertical: renderLayout("half_vertical", emptyData),
       markup_quadrant: renderLayout("quadrant", emptyData),
+      markup_x: renderLayout("full", emptyData, SCREEN_X),
+      markup_x_half_horizontal: renderLayout(
+        "half_horizontal",
+        emptyData,
+        SCREEN_X,
+      ),
+      markup_x_half_vertical: renderLayout(
+        "half_vertical",
+        emptyData,
+        SCREEN_X,
+      ),
+      markup_x_quadrant: renderLayout("quadrant", emptyData, SCREEN_X),
     });
   }
 
@@ -50,5 +62,9 @@ export async function POST(request: Request) {
     markup_half_horizontal: renderLayout("half_horizontal", data),
     markup_half_vertical: renderLayout("half_vertical", data),
     markup_quadrant: renderLayout("quadrant", data),
+    markup_x: renderLayout("full", data, SCREEN_X),
+    markup_x_half_horizontal: renderLayout("half_horizontal", data, SCREEN_X),
+    markup_x_half_vertical: renderLayout("half_vertical", data, SCREEN_X),
+    markup_x_quadrant: renderLayout("quadrant", data, SCREEN_X),
   });
 }

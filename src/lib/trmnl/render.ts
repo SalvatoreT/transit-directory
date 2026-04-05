@@ -18,19 +18,32 @@ function esc(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+interface ScreenSize {
+  width: number;
+  height: number;
+}
+
+const SCREEN_OG: ScreenSize = { width: 800, height: 480 };
+const SCREEN_X: ScreenSize = { width: 1872, height: 1404 };
+
 function page(
   viewClass: string,
   inner: string,
   stopName: string,
   count: number,
+  screen: ScreenSize = SCREEN_OG,
 ): string {
+  const sizeOverride =
+    screen === SCREEN_OG
+      ? ""
+      : `\n  <style>:root { --screen-w: ${screen.width}px; --screen-h: ${screen.height}px; }</style>`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${CSS}"/>
-  <script type="text/javascript" src="${JS}"></script>
+  <script type="text/javascript" src="${JS}"></script>${sizeOverride}
 </head>
 <body class="environment trmnl">
   <div class="screen">
@@ -88,7 +101,10 @@ function departureItemCompact(
 
 // ── Full (800x480 OG · 1872x1404 X) ─────────────────────────────────────────
 
-export function renderFull(data: TrmnlStopData): string {
+export function renderFull(
+  data: TrmnlStopData,
+  screen: ScreenSize = SCREEN_OG,
+): string {
   const deps = data.departures.slice(0, 5);
 
   if (deps.length === 0) {
@@ -97,6 +113,7 @@ export function renderFull(data: TrmnlStopData): string {
       noDepartures(),
       data.stopName,
       data.departureCount,
+      screen,
     );
   }
 
@@ -104,12 +121,15 @@ export function renderFull(data: TrmnlStopData): string {
   const inner = `<div class="grid grid--cols-1 gap--small">
     ${items}
   </div>`;
-  return page("view--full", inner, data.stopName, data.departureCount);
+  return page("view--full", inner, data.stopName, data.departureCount, screen);
 }
 
 // ── Half Horizontal (800x240 OG · 1872x702 X) ───────────────────────────────
 
-export function renderHalfHorizontal(data: TrmnlStopData): string {
+export function renderHalfHorizontal(
+  data: TrmnlStopData,
+  screen: ScreenSize = SCREEN_OG,
+): string {
   const deps = data.departures.slice(0, 3);
 
   if (deps.length === 0) {
@@ -118,6 +138,7 @@ export function renderHalfHorizontal(data: TrmnlStopData): string {
       noDepartures(),
       data.stopName,
       data.departureCount,
+      screen,
     );
   }
 
@@ -130,12 +151,16 @@ export function renderHalfHorizontal(data: TrmnlStopData): string {
     inner,
     data.stopName,
     data.departureCount,
+    screen,
   );
 }
 
 // ── Half Vertical (400x480 OG · 936x1404 X) ─────────────────────────────────
 
-export function renderHalfVertical(data: TrmnlStopData): string {
+export function renderHalfVertical(
+  data: TrmnlStopData,
+  screen: ScreenSize = SCREEN_OG,
+): string {
   const deps = data.departures.slice(0, 5);
 
   if (deps.length === 0) {
@@ -144,6 +169,7 @@ export function renderHalfVertical(data: TrmnlStopData): string {
       noDepartures(),
       data.stopName,
       data.departureCount,
+      screen,
     );
   }
 
@@ -151,12 +177,21 @@ export function renderHalfVertical(data: TrmnlStopData): string {
   const inner = `<div class="grid grid--cols-1 gap--small">
     ${items}
   </div>`;
-  return page("view--half_vertical", inner, data.stopName, data.departureCount);
+  return page(
+    "view--half_vertical",
+    inner,
+    data.stopName,
+    data.departureCount,
+    screen,
+  );
 }
 
 // ── Quadrant (400x240 OG · 936x702 X) ───────────────────────────────────────
 
-export function renderQuadrant(data: TrmnlStopData): string {
+export function renderQuadrant(
+  data: TrmnlStopData,
+  screen: ScreenSize = SCREEN_OG,
+): string {
   const [next, ...rest] = data.departures;
   const remaining = rest.slice(0, 2);
 
@@ -176,22 +211,34 @@ export function renderQuadrant(data: TrmnlStopData): string {
   </div>`;
   }
 
-  return page("view--quadrant", inner, data.stopName, data.departureCount);
+  return page(
+    "view--quadrant",
+    inner,
+    data.stopName,
+    data.departureCount,
+    screen,
+  );
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 
-export function renderLayout(layout: string, data: TrmnlStopData): string {
+export { SCREEN_OG, SCREEN_X };
+
+export function renderLayout(
+  layout: string,
+  data: TrmnlStopData,
+  screen: ScreenSize = SCREEN_OG,
+): string {
   switch (layout) {
     case "full":
-      return renderFull(data);
+      return renderFull(data, screen);
     case "half_horizontal":
-      return renderHalfHorizontal(data);
+      return renderHalfHorizontal(data, screen);
     case "half_vertical":
-      return renderHalfVertical(data);
+      return renderHalfVertical(data, screen);
     case "quadrant":
-      return renderQuadrant(data);
+      return renderQuadrant(data, screen);
     default:
-      return renderFull(data);
+      return renderFull(data, screen);
   }
 }
