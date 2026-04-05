@@ -58,13 +58,13 @@ function noDepartures(msg = "No upcoming departures"): string {
 function departureItem(dep: TrmnlDeparture, emphasis: number = 1): string {
   const delayPart =
     dep.delayText !== "Sched."
-      ? ` <span class="label label--small${delayLabelClass(dep.delayText)}">${esc(dep.delayText)}</span>`
+      ? ` <span class="label${delayLabelClass(dep.delayText)}">${esc(dep.delayText)}</span>`
       : "";
   return `<div class="item item--emphasis-${emphasis}">
     <div class="meta"></div>
     <div class="content">
-      <span class="title title--small">${esc(dep.routeName)} &mdash; ${esc(dep.time)}${delayPart}</span>
-      <span class="label label--small label--underline">${esc(dep.headsign)}</span>
+      <span class="title">${esc(dep.routeName)} &mdash; ${esc(dep.time)}${delayPart}</span>
+      <span class="label label--underline">${esc(dep.headsign)}</span>
     </div>
   </div>`;
 }
@@ -75,13 +75,13 @@ function departureItemCompact(
 ): string {
   const delayPart =
     dep.delayText !== "Sched."
-      ? ` <span class="label label--small${delayLabelClass(dep.delayText)}">${esc(dep.delayText)}</span>`
+      ? ` <span class="label${delayLabelClass(dep.delayText)}">${esc(dep.delayText)}</span>`
       : "";
   return `<div class="item item--emphasis-${emphasis}">
     <div class="meta"></div>
     <div class="content">
-      <span class="title title--small">${esc(dep.routeName)} &mdash; ${esc(dep.time)}${delayPart}</span>
-      <span class="label label--small">${esc(dep.headsign)}</span>
+      <span class="title">${esc(dep.routeName)} &mdash; ${esc(dep.time)}${delayPart}</span>
+      <span class="label">${esc(dep.headsign)}</span>
     </div>
   </div>`;
 }
@@ -89,7 +89,7 @@ function departureItemCompact(
 // ── Full (800x480 OG · 1872x1404 X) ─────────────────────────────────────────
 
 export function renderFull(data: TrmnlStopData): string {
-  const deps = data.departures.slice(0, 12);
+  const deps = data.departures.slice(0, 5);
 
   if (deps.length === 0) {
     return page(
@@ -101,7 +101,7 @@ export function renderFull(data: TrmnlStopData): string {
   }
 
   const items = deps.map((d) => departureItem(d, 1)).join("\n    ");
-  const inner = `<div class="grid grid--cols-2 gap--small">
+  const inner = `<div class="grid grid--cols-1 gap--small">
     ${items}
   </div>`;
   return page("view--full", inner, data.stopName, data.departureCount);
@@ -110,7 +110,7 @@ export function renderFull(data: TrmnlStopData): string {
 // ── Half Horizontal (800x240 OG · 1872x702 X) ───────────────────────────────
 
 export function renderHalfHorizontal(data: TrmnlStopData): string {
-  const deps = data.departures.slice(0, 8);
+  const deps = data.departures.slice(0, 3);
 
   if (deps.length === 0) {
     return page(
@@ -122,7 +122,7 @@ export function renderHalfHorizontal(data: TrmnlStopData): string {
   }
 
   const items = deps.map((d) => departureItemCompact(d, 1)).join("\n    ");
-  const inner = `<div class="grid grid--cols-2 gap--small">
+  const inner = `<div class="grid grid--cols-1 gap--small">
     ${items}
   </div>`;
   return page(
@@ -136,7 +136,7 @@ export function renderHalfHorizontal(data: TrmnlStopData): string {
 // ── Half Vertical (400x480 OG · 936x1404 X) ─────────────────────────────────
 
 export function renderHalfVertical(data: TrmnlStopData): string {
-  const deps = data.departures.slice(0, 10);
+  const deps = data.departures.slice(0, 5);
 
   if (deps.length === 0) {
     return page(
@@ -158,7 +158,7 @@ export function renderHalfVertical(data: TrmnlStopData): string {
 
 export function renderQuadrant(data: TrmnlStopData): string {
   const [next, ...rest] = data.departures;
-  const remaining = rest.slice(0, 5);
+  const remaining = rest.slice(0, 2);
 
   let inner: string;
 
