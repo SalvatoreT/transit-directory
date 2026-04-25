@@ -75,6 +75,43 @@ async function triggerStaticFeedUpdates(env: Env) {
 // Sentinel value for alerts with no end time (year 9999 epoch).
 const NO_END_TIME = 253402300799;
 
+// Only the most recent update per trip is ever read (getDepartures/getTripStops
+// take MAX(update_pk) per trip_pk), so older rows are dead weight. Keep a small
+// window so a trip with no fresh push still shows its last known delay.
+async function cleanupTripUpdates(env: Env) {
+  const startMs = Date.now();
+  const BUDGET_MS = 30000;
+  const RETENTION_SECONDS = 2 * 3600;
+  const BATCH_SIZE = 50000;
+
+  const cutoff = Math.floor(Date.now() / 1000) - RETENTION_SECONDS;
+  let totalDeleted = 0;
+  let batches = 0;
+
+  while (Date.now() - startMs < BUDGET_MS) {
+    const result = await env.gtfs_data
+      .prepare(
+        `DELETE FROM trip_updates
+         WHERE update_pk IN (
+           SELECT update_pk FROM trip_updates
+           WHERE updated_time < ?
+           LIMIT ${BATCH_SIZE}
+         )`,
+      )
+      .bind(cutoff)
+      .run();
+
+    const deleted = result.meta.changes ?? 0;
+    totalDeleted += deleted;
+    batches += 1;
+    if (deleted < BATCH_SIZE) break;
+  }
+
+  console.log(
+    `[cleanup] Purged ${totalDeleted} trip_updates rows older than ${RETENTION_SECONDS}s in ${batches} batches.`,
+  );
+}
+
 async function cleanupServiceAlerts(env: Env) {
   const now = Math.floor(Date.now() / 1000);
 
@@ -122,7 +159,8 @@ export default {
       ctx.waitUntil(triggerStaticFeedUpdates(env));
     } else {
       ctx.waitUntil(triggerRealtimeWorkflow(env));
-      // Run alert cleanup alongside realtime workflow (hourly)
+      // Run cleanup jobs alongside realtime workflow (hourly)
+      ctx.waitUntil(cleanupTripUpdates(env));
       ctx.waitUntil(cleanupServiceAlerts(env));
     }
   },
