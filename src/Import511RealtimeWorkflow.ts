@@ -118,9 +118,22 @@ export class Import511RealtimeWorkflow extends WorkflowEntrypoint<
             }
           }
 
+          // Upsert one row per (feed_source_id, trip_id). The DO UPDATE is
+          // guarded so a fetch that brings back identical state (same delay,
+          // status, trip_pk, and a stale-or-equal timestamp) is a no-op and
+          // writes nothing - no row update, no index churn.
           const stmt = this.env.gtfs_data.prepare(`
-              INSERT OR IGNORE INTO trip_updates (feed_source_id, trip_id, trip_pk, delay, status, updated_time)
+              INSERT INTO trip_updates (feed_source_id, trip_id, trip_pk, delay, status, updated_time)
               VALUES (?, ?, ?, ?, ?, ?)
+              ON CONFLICT(feed_source_id, trip_id) DO UPDATE SET
+                  trip_pk      = excluded.trip_pk,
+                  delay        = excluded.delay,
+                  status       = excluded.status,
+                  updated_time = excluded.updated_time
+              WHERE excluded.updated_time > trip_updates.updated_time
+                 OR excluded.delay   IS NOT trip_updates.delay
+                 OR excluded.status  IS NOT trip_updates.status
+                 OR excluded.trip_pk IS NOT trip_updates.trip_pk
           `);
 
           const batch: D1PreparedStatement[] = [];

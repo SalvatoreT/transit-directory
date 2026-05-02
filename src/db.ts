@@ -288,10 +288,7 @@ export async function getTripStops(tripPk: number): Promise<TripStopData[]> {
         tu.delay
     FROM stops s
     JOIN stop_times st ON s.stop_pk = st.stop_pk
-    LEFT JOIN trip_updates tu ON st.trip_pk = tu.trip_pk
-      AND tu.update_pk = (SELECT MAX(update_pk)
-                          FROM trip_updates tu2
-                          WHERE tu2.trip_pk = st.trip_pk)
+    LEFT JOIN trip_updates tu ON tu.trip_pk = st.trip_pk
     WHERE st.trip_pk = ?
     ORDER BY st.stop_sequence ASC
   `;
@@ -354,9 +351,6 @@ export async function getDepartures(
     JOIN trips t ON st.trip_pk = t.trip_pk
     JOIN routes r ON t.route_pk = r.route_pk
     LEFT JOIN trip_updates tu ON tu.trip_pk = t.trip_pk
-      AND tu.update_pk = (SELECT MAX(update_pk)
-                          FROM trip_updates tu2
-                          WHERE tu2.trip_pk = t.trip_pk)
     WHERE ${conditions.join(" AND ")}
       AND st.departure_time >= ?
       AND st.departure_time <= ?

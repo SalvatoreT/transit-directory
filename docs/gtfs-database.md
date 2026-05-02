@@ -653,14 +653,10 @@ INSERT OR REPLACE INTO trip_updates (
 
 **Cleanup**
 
-- Periodically delete very old trip_updates:
-
-```sql
-DELETE FROM trip_updates
-WHERE updated_time < DATETIME('now', '-2 days');
-```
-
-(adjust the retention as needed).
+The composite primary key `(feed_source_id, trip_id)` keeps the table at one
+row per active trip, so no time-based retention job is required. Rows for
+trips that disappear from the feed are cleared on the next static feed import
+(see `Import511Workflow` clearing `trip_pk` when versions are swapped).
 
 ---
 
@@ -940,11 +936,10 @@ Example cleanup jobs:
 -- Remove vehicle positions older than 2 hours
 DELETE FROM vehicle_positions
 WHERE timestamp < DATETIME('now', '-2 hours');
-
--- Remove trip updates older than 2 days
-DELETE FROM trip_updates
-WHERE updated_time < DATETIME('now', '-2 days');
 ```
+
+`trip_updates` is keyed on `(feed_source_id, trip_id)` and upserted in place,
+so it does not need a periodic cleanup job.
 
 ### 7.2 Deleting old feed versions (optional)
 
