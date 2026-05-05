@@ -1,5 +1,10 @@
 import type { TrmnlStopData } from "../../../../src/lib/trmnl/data";
 import {
+  DEMO_STYLES,
+  SCREEN_OG as DEMO_SCREEN_OG,
+  SCREEN_X as DEMO_SCREEN_X,
+} from "../../../../src/lib/trmnl/demoStyles";
+import {
   renderFull,
   renderHalfHorizontal,
   renderHalfVertical,
@@ -11,7 +16,7 @@ const SAMPLE_DATA: TrmnlStopData = {
   stopName: "Caltrain - San Francisco",
   stopId: "70012",
   agencyName: "Caltrain",
-  departureCount: 12,
+  departureCount: 24,
   lastUpdated: new Date().toISOString(),
   departures: [
     {
@@ -86,6 +91,78 @@ const SAMPLE_DATA: TrmnlStopData = {
       time: "18:32",
       delayText: "On Time",
     },
+    {
+      routeName: "Express",
+      headsign: "San Jose Diridon",
+      time: "18:50",
+      delayText: "Sched.",
+    },
+    {
+      routeName: "Local",
+      headsign: "San Jose Diridon",
+      time: "19:15",
+      delayText: "On Time",
+    },
+    {
+      routeName: "Limited",
+      headsign: "Gilroy",
+      time: "19:32",
+      delayText: "+2 min late",
+    },
+    {
+      routeName: "Local",
+      headsign: "Tamien",
+      time: "19:47",
+      delayText: "On Time",
+    },
+    {
+      routeName: "Express",
+      headsign: "San Jose Diridon",
+      time: "20:05",
+      delayText: "Sched.",
+    },
+    {
+      routeName: "Local",
+      headsign: "San Jose Diridon",
+      time: "20:15",
+      delayText: "-1 min early",
+    },
+    {
+      routeName: "Limited",
+      headsign: "San Jose Diridon",
+      time: "20:32",
+      delayText: "On Time",
+    },
+    {
+      routeName: "Express",
+      headsign: "Gilroy",
+      time: "20:50",
+      delayText: "Sched.",
+    },
+    {
+      routeName: "Local",
+      headsign: "San Jose Diridon",
+      time: "21:15",
+      delayText: "+3 min late",
+    },
+    {
+      routeName: "Limited",
+      headsign: "Tamien",
+      time: "21:32",
+      delayText: "On Time",
+    },
+    {
+      routeName: "Express",
+      headsign: "San Jose Diridon",
+      time: "21:50",
+      delayText: "Sched.",
+    },
+    {
+      routeName: "Local",
+      headsign: "San Jose Diridon",
+      time: "22:15",
+      delayText: "On Time",
+    },
   ],
 };
 
@@ -117,7 +194,21 @@ function layoutIframe(
     </div>`;
 }
 
+// Use a fixed reference time so countdown styles render predictably in the
+// demo. SAMPLE_DATA's first departure is at 15:15.
+const NOW_HHMM = "15:00";
+
 export async function GET() {
+  const styleSection = DEMO_STYLES.map(
+    ({ id, name, description, render }) => `
+    <div class="style-card">
+      <h3 class="style-title">${name} <code class="style-id">${id}</code></h3>
+      <p class="style-desc">${description}</p>
+      ${layoutIframe("OG (800x480)", render(SAMPLE_DATA, NOW_HHMM, DEMO_SCREEN_OG), DEMO_SCREEN_OG.width, DEMO_SCREEN_OG.height)}
+      ${layoutIframe("TRMNL X (1872x1404)", render(SAMPLE_DATA, NOW_HHMM, DEMO_SCREEN_X), DEMO_SCREEN_X.width, DEMO_SCREEN_X.height, 0.5)}
+    </div>`,
+  ).join("\n");
+
   const fullHtml = renderFull(SAMPLE_DATA);
   const halfHHtml = renderHalfHorizontal(SAMPLE_DATA);
   const halfVHtml = renderHalfVertical(SAMPLE_DATA);
@@ -164,6 +255,33 @@ export async function GET() {
       vertical-align: middle;
       font-weight: normal;
     }
+    .style-card {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 32px;
+    }
+    .style-title {
+      font-size: 1.1rem;
+      margin: 0 0 4px 0;
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    .style-id {
+      font-size: 0.75rem;
+      background: #eee;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-weight: normal;
+      color: #555;
+    }
+    .style-desc {
+      color: #666;
+      margin: 0 0 16px 0;
+      font-size: 0.9rem;
+    }
   </style>
 </head>
 <body>
@@ -171,7 +289,13 @@ export async function GET() {
   <p class="subtitle">Example layouts showing upcoming departures for <strong>${SAMPLE_DATA.stopName}</strong></p>
 
   <div class="device-section">
-    <h2 class="device-title">TRMNL OG <span class="device-badge">800&times;480 &middot; B&amp;W</span></h2>
+    <h2 class="device-title">Brutalist <span class="device-badge">Full layout &middot; OG &amp; X &middot; ignores TRMNL CSS</span></h2>
+    <p class="subtitle">Custom HTML/CSS targeting e-ink. Two columns on OG, three on TRMNL X.</p>
+    ${styleSection}
+  </div>
+
+  <div class="device-section">
+    <h2 class="device-title">TRMNL OG <span class="device-badge">800&times;480 &middot; B&amp;W</span> <span style="font-size:0.85rem; color:#888; font-weight:normal;">(current production layout, for reference)</span></h2>
     ${layoutIframe("Full", fullHtml, 800, 480)}
     ${layoutIframe("Half Horizontal", halfHHtml, 800, 240)}
     ${layoutIframe("Half Vertical", halfVHtml, 400, 480)}
