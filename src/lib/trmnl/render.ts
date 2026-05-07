@@ -1,14 +1,12 @@
-import type { TrmnlDeparture, TrmnlStopData } from "./data";
+import type { TrmnlStopData } from "./data";
 
-const CSS = "https://trmnl.com/css/latest/plugins.css";
-const JS = "https://trmnl.com/css/latest/plugins.js";
-
-function delayLabelClass(delayText: string): string {
-  if (delayText === "On Time") return " label--success";
-  if (delayText.includes("late")) return " label--error";
-  if (delayText.includes("early")) return " label--warning";
-  return "";
+export interface ScreenSize {
+  width: number;
+  height: number;
 }
+
+export const SCREEN_OG: ScreenSize = { width: 800, height: 480 };
+export const SCREEN_X: ScreenSize = { width: 1872, height: 1404 };
 
 function esc(s: string): string {
   return s
@@ -18,239 +16,267 @@ function esc(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-interface ScreenSize {
-  width: number;
-  height: number;
+interface BrutalistOptions {
+  viewport: ScreenSize;
+  cols: number;
+  baseTileH?: number;
+  baseHeaderH?: number;
+  showHeadsign?: boolean;
 }
 
-const SCREEN_OG: ScreenSize = { width: 800, height: 480 };
-const SCREEN_X: ScreenSize = { width: 1872, height: 1404 };
+function renderBrutalist(data: TrmnlStopData, opts: BrutalistOptions): string {
+  const {
+    viewport,
+    cols,
+    baseTileH = 86,
+    baseHeaderH = 48,
+    showHeadsign = true,
+  } = opts;
 
-function page(
-  viewClass: string,
-  inner: string,
-  stopName: string,
-  count: number,
-  screen: ScreenSize = SCREEN_OG,
-): string {
-  const s = (px: number) => Math.round(px * (screen.width / SCREEN_OG.width));
-  const sizeOverride =
-    screen === SCREEN_OG
-      ? ""
-      : `\n  <style>:root {
-    --screen-w: ${screen.width}px;
-    --screen-h: ${screen.height}px;
-    --gap-xsmall: ${s(5)}px;
-    --gap-small: ${s(7)}px;
-    --gap: ${s(10)}px;
-    --gap-medium: ${s(16)}px;
-    --gap-large: ${s(20)}px;
-    --gap-xlarge: ${s(30)}px;
-    --gap-xxlarge: ${s(40)}px;
-    --title-font-size: ${s(26)}px;
-    --title-small-font-size: ${s(16)}px;
-    --title-large-font-size: ${s(30)}px;
-    --title-xlarge-font-size: ${s(35)}px;
-    --title-xxlarge-font-size: ${s(40)}px;
-    --label-font-size: ${s(16)}px;
-    --label-small-font-size: ${s(16)}px;
-    --label-large-font-size: ${s(21)}px;
-    --label-xlarge-font-size: ${s(26)}px;
-    --label-xxlarge-font-size: ${s(30)}px;
-    --description-font-size: ${s(16)}px;
-    --description-large-font-size: ${s(16)}px;
-    --description-xlarge-font-size: ${s(21)}px;
-    --item-meta-width: ${s(10)}px;
-    --item-index-font-size: ${s(16)}px;
-    --title-bar-font-size: ${s(16)}px;
-    --list-gap-small: ${s(8)}px;
-    --list-gap-large: ${s(16)}px;
-  }</style>`;
+  const colWidth = viewport.width / cols;
+  const s = Math.min(colWidth / 400, 1.6);
+  const px = (p: number) => Math.round(p * s);
+
+  const headerH = px(baseHeaderH);
+  const tileH = px(baseTileH);
+  const rowGap = Math.max(4, px(6));
+  const colGap = Math.max(4, px(8));
+  const sidePad = px(12);
+  const topPad = px(8);
+
+  const availH = viewport.height - headerH - topPad * 2;
+  const fitRows = Math.max(1, Math.floor((availH + rowGap) / (tileH + rowGap)));
+  const total = cols * fitRows;
+  const deps = data.departures.slice(0, total);
+  const isEmpty = data.departures.length === 0;
+
+  const timeFontPx = px(showHeadsign ? 34 : 24);
+  const routeFontPx = px(showHeadsign ? 26 : 18);
+  const delayFontPx = px(showHeadsign ? 10 : 8);
+  const headsignFontPx = px(13);
+  const stopFontPx = px(showHeadsign ? 22 : 14);
+  const countFontPx = px(showHeadsign ? 11 : 9);
+  const timeMinW = px(showHeadsign ? 140 : 110);
+
+  const styleBlock = `
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  width: ${viewport.width}px;
+  height: ${viewport.height}px;
+  overflow: hidden;
+  background: #fff;
+  color: #000;
+  font-family: "Helvetica Neue Condensed", "Arial Narrow", Impact, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  position: relative;
+}
+.bt-header {
+  height: ${headerH}px;
+  background: #000;
+  color: #fff;
+  padding: 0 ${px(16)}px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: ${px(12)}px;
+}
+.bt-stop {
+  flex: 1;
+  min-width: 0;
+  font-weight: 900;
+  font-size: ${stopFontPx}px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bt-count {
+  flex-shrink: 0;
+  font-size: ${countFontPx}px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+}
+.bt-grid {
+  display: grid;
+  grid-template-columns: repeat(${cols}, 1fr);
+  gap: ${rowGap}px ${colGap}px;
+  padding: ${topPad}px ${sidePad}px;
+}
+.bt-tile {
+  display: flex;
+  border: ${px(4)}px solid #000;
+  background: #fff;
+  height: ${tileH}px;
+}
+.bt-time {
+  background: #000;
+  color: #fff;
+  padding: ${px(6)}px ${px(12)}px;
+  min-width: ${timeMinW}px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+}
+.bt-time-text {
+  font-weight: 900;
+  font-size: ${timeFontPx}px;
+  line-height: 0.95;
+  letter-spacing: -0.03em;
+}
+.bt-delay {
+  font-size: ${delayFontPx}px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  opacity: 0.85;
+  margin-top: ${px(2)}px;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bt-content {
+  flex: 1;
+  padding: ${px(6)}px ${px(12)}px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  border-left: ${px(4)}px solid #000;
+}
+.bt-route {
+  font-weight: 900;
+  font-size: ${routeFontPx}px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bt-headsign {
+  font-size: ${headsignFontPx}px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  margin-top: ${px(6)}px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bt-empty {
+  border: ${px(4)}px dashed #ccc;
+  height: ${tileH}px;
+}
+.bt-no-deps {
+  position: absolute;
+  top: ${headerH}px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  font-size: ${px(showHeadsign ? 28 : 18)}px;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  color: #000;
+  pointer-events: none;
+}
+`;
+
+  const header = `<div class="bt-header"><div class="bt-stop">${esc(
+    data.stopName,
+  )}</div><div class="bt-count">// ${data.departureCount} OUT</div></div>`;
+
+  const tiles = Array.from({ length: total }, (_, i) => {
+    const d = deps[i];
+    if (!d) return `<div class="bt-empty"></div>`;
+    const delay =
+      d.delayText && d.delayText !== "Sched."
+        ? `<div class="bt-delay">${esc(d.delayText)}</div>`
+        : "";
+    const headsign = showHeadsign
+      ? `<div class="bt-headsign">↦ ${esc(d.headsign)}</div>`
+      : "";
+    return `<div class="bt-tile"><div class="bt-time"><div class="bt-time-text">${esc(
+      d.time,
+    )}</div>${delay}</div><div class="bt-content"><div class="bt-route">${esc(
+      d.routeName,
+    )}</div>${headsign}</div></div>`;
+  }).join("");
+
+  const grid = `<div class="bt-grid">${tiles}</div>`;
+  const emptyOverlay = isEmpty
+    ? `<div class="bt-no-deps">No departures</div>`
+    : "";
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="${CSS}"/>
-  <script type="text/javascript" src="${JS}"></script>${sizeOverride}
+<meta charset="UTF-8">
+<style>${styleBlock}</style>
 </head>
-<body class="environment trmnl">
-  <div class="screen">
-    <div class="view ${viewClass}">
-      <div class="layout layout--col">
-        ${inner}
-      </div>
-      <div class="title_bar">
-        <img class="image" src="https://trmnl.com/images/plugins/trmnl--render.svg"/>
-        <span class="title">${esc(stopName)}</span>
-        <span class="instance">${count} departures</span>
-      </div>
-    </div>
-  </div>
-</body>
+<body>${header}${grid}${emptyOverlay}</body>
 </html>`;
 }
-
-function noDepartures(msg = "No upcoming departures"): string {
-  return `<div class="layout layout--col layout--center">
-    <span class="title">${msg}</span>
-  </div>`;
-}
-
-function delayLabel(dep: TrmnlDeparture): string {
-  if (dep.delayText === "Sched.") return "";
-  return `<span class="label${delayLabelClass(dep.delayText)}" style="white-space: nowrap; display: inline-block; font-size: calc(var(--title-font-size) * 0.55);">${esc(dep.delayText)}</span>`;
-}
-
-function departureItem(dep: TrmnlDeparture, emphasis: number = 3): string {
-  return `<div class="item item--emphasis-${emphasis}">
-    <div class="meta" style="min-width: 5em; width: auto; background: transparent; text-align: center; flex-direction: column;"><span class="title" style="font-family: monospace; display: block;">${esc(dep.time)}</span>${delayLabel(dep)}</div>
-    <div class="content">
-      <span class="title">${esc(dep.routeName)}</span>
-      <span class="label label--underline">${esc(dep.headsign)}</span>
-    </div>
-  </div>`;
-}
-
-function departureItemCompact(
-  dep: TrmnlDeparture,
-  emphasis: number = 2,
-): string {
-  return `<div class="item item--emphasis-${emphasis}">
-    <div class="meta" style="min-width: 5em; width: auto; background: transparent; text-align: center; flex-direction: column;"><span class="title" style="font-family: monospace; display: block;">${esc(dep.time)}</span>${delayLabel(dep)}</div>
-    <div class="content">
-      <span class="title">${esc(dep.routeName)}</span>
-      <span class="label">${esc(dep.headsign)}</span>
-    </div>
-  </div>`;
-}
-
-// ── Full (800x480 OG · 1872x1404 X) ─────────────────────────────────────────
 
 export function renderFull(
   data: TrmnlStopData,
   screen: ScreenSize = SCREEN_OG,
 ): string {
-  const deps = data.departures.slice(0, 8);
-
-  if (deps.length === 0) {
-    return page(
-      "view--full",
-      noDepartures(),
-      data.stopName,
-      data.departureCount,
-      screen,
-    );
-  }
-
-  const items = deps.map((d) => departureItem(d)).join("\n    ");
-  const rows = Math.ceil(deps.length / 2);
-  const inner = `<div class="grid grid--cols-2 gap--small" style="grid-auto-flow: column; grid-template-rows: repeat(${rows}, auto);">
-    ${items}
-  </div>`;
-  return page("view--full", inner, data.stopName, data.departureCount, screen);
+  return renderBrutalist(data, {
+    viewport: { width: screen.width, height: screen.height },
+    cols: screen.width >= 1500 ? 3 : 2,
+  });
 }
-
-// ── Half Horizontal (800x240 OG · 1872x702 X) ───────────────────────────────
 
 export function renderHalfHorizontal(
   data: TrmnlStopData,
   screen: ScreenSize = SCREEN_OG,
 ): string {
-  const deps = data.departures.slice(0, 3);
-
-  if (deps.length === 0) {
-    return page(
-      "view--half_horizontal",
-      noDepartures(),
-      data.stopName,
-      data.departureCount,
-      screen,
-    );
-  }
-
-  const items = deps.map((d) => departureItemCompact(d)).join("\n    ");
-  const rows = Math.ceil(deps.length / 2);
-  const inner = `<div class="grid grid--cols-2 gap--small" style="grid-auto-flow: column; grid-template-rows: repeat(${rows}, auto);">
-    ${items}
-  </div>`;
-  return page(
-    "view--half_horizontal",
-    inner,
-    data.stopName,
-    data.departureCount,
-    screen,
-  );
+  return renderBrutalist(data, {
+    viewport: {
+      width: screen.width,
+      height: Math.floor(screen.height / 2),
+    },
+    cols: screen.width >= 1500 ? 3 : 2,
+    baseTileH: 70,
+    baseHeaderH: 32,
+    showHeadsign: false,
+  });
 }
-
-// ── Half Vertical (400x480 OG · 936x1404 X) ─────────────────────────────────
 
 export function renderHalfVertical(
   data: TrmnlStopData,
   screen: ScreenSize = SCREEN_OG,
 ): string {
-  const deps = data.departures.slice(0, 5);
-
-  if (deps.length === 0) {
-    return page(
-      "view--half_vertical",
-      noDepartures(),
-      data.stopName,
-      data.departureCount,
-      screen,
-    );
-  }
-
-  const items = deps.map((d) => departureItem(d)).join("\n    ");
-  const inner = `<div class="grid grid--cols-1 gap--small">
-    ${items}
-  </div>`;
-  return page(
-    "view--half_vertical",
-    inner,
-    data.stopName,
-    data.departureCount,
-    screen,
-  );
+  return renderBrutalist(data, {
+    viewport: {
+      width: Math.floor(screen.width / 2),
+      height: screen.height,
+    },
+    cols: 1,
+  });
 }
-
-// ── Quadrant (400x240 OG · 936x702 X) ───────────────────────────────────────
 
 export function renderQuadrant(
   data: TrmnlStopData,
   screen: ScreenSize = SCREEN_OG,
 ): string {
-  const [next, ...rest] = data.departures;
-  const remaining = rest.slice(0, 2);
-
-  let inner: string;
-
-  if (!next) {
-    inner = noDepartures("No departures");
-  } else {
-    const nextItem = departureItem(next);
-    const restItems = remaining
-      .map((d) => departureItemCompact(d))
-      .join("\n    ");
-
-    inner = `<div class="grid grid--cols-1 gap--small">
-    ${nextItem}
-    ${restItems}
-  </div>`;
-  }
-
-  return page(
-    "view--quadrant",
-    inner,
-    data.stopName,
-    data.departureCount,
-    screen,
-  );
+  return renderBrutalist(data, {
+    viewport: {
+      width: Math.floor(screen.width / 2),
+      height: Math.floor(screen.height / 2),
+    },
+    cols: 1,
+    baseTileH: 60,
+    baseHeaderH: 28,
+    showHeadsign: false,
+  });
 }
-
-// ── Dispatch ─────────────────────────────────────────────────────────────────
-
-export { SCREEN_OG, SCREEN_X };
 
 export function renderLayout(
   layout: string,
