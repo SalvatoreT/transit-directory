@@ -50,13 +50,13 @@ function renderBrutalist(data: TrmnlStopData, opts: BrutalistOptions): string {
   const deps = data.departures.slice(0, total);
   const isEmpty = data.departures.length === 0;
 
-  const timeFontPx = px(showHeadsign ? 34 : 24);
-  const routeFontPx = px(showHeadsign ? 26 : 18);
+  const timeFontPx = px(showHeadsign ? 26 : 24);
+  const routeFontPx = px(showHeadsign ? 22 : 18);
   const delayFontPx = px(showHeadsign ? 10 : 8);
   const headsignFontPx = px(13);
   const stopFontPx = px(showHeadsign ? 22 : 14);
   const countFontPx = px(showHeadsign ? 11 : 9);
-  const timeMinW = px(showHeadsign ? 140 : 110);
+  const timeMinW = px(showHeadsign ? 108 : 110);
 
   const styleBlock = `
 *, *::before, *::after { box-sizing: border-box; }
