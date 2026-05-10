@@ -100,7 +100,7 @@ body {
 }
 .bt-grid {
   display: grid;
-  grid-template-columns: repeat(${cols}, 1fr);
+  grid-template-columns: repeat(${cols}, minmax(0, 1fr));
   gap: ${rowGap}px ${colGap}px;
   padding: ${topPad}px ${sidePad}px;
 }
@@ -109,6 +109,8 @@ body {
   border: ${px(4)}px solid #000;
   background: #fff;
   height: ${tileH}px;
+  min-width: 0;
+  overflow: hidden;
 }
 .bt-time {
   background: #000;

@@ -11,7 +11,7 @@ const SAMPLE_DATA: TrmnlStopData = {
   stopName: "Caltrain - San Francisco",
   stopId: "70012",
   agencyName: "Caltrain",
-  departureCount: 24,
+  departureCount: 25,
   lastUpdated: new Date().toISOString(),
   departures: [
     {
@@ -19,6 +19,12 @@ const SAMPLE_DATA: TrmnlStopData = {
       headsign: "San Jose Diridon",
       time: "15:15",
       delayText: "On Time",
+    },
+    {
+      routeName: "BART",
+      headsign: "San Francisco International Airport",
+      time: "15:20",
+      delayText: "+1 min late",
     },
     {
       routeName: "Limited",
