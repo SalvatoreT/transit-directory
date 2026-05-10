@@ -46,7 +46,7 @@ export default async function RoutePage({
   const now = DateTime.now().setZone(agency_timezone);
   const midnight = now.startOf("day");
   const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
-  const twoHoursLaterSeconds = currentSeconds + 4 * 60 * 60;
+  const endSeconds = currentSeconds + 4 * 60 * 60;
   const todayNoon = midnight.set({ hour: 12 }).toSeconds()!;
   const days = [
     "sunday",
@@ -63,7 +63,7 @@ export default async function RoutePage({
     feed_version_id,
     route_pk: route.route_pk,
     currentSeconds,
-    twoHoursLaterSeconds,
+    endSeconds,
     todayNoon,
     todayColumn,
   });

@@ -8,6 +8,12 @@ export interface ScreenSize {
 export const SCREEN_OG: ScreenSize = { width: 800, height: 480 };
 export const SCREEN_X: ScreenSize = { width: 1872, height: 1404 };
 
+const LARGE_SCREEN_MIN_WIDTH = 1500;
+
+function colsForWidth(width: number): number {
+  return width >= LARGE_SCREEN_MIN_WIDTH ? 3 : 2;
+}
+
 function esc(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -100,7 +106,7 @@ body {
 }
 .bt-grid {
   display: grid;
-  grid-template-columns: repeat(${cols}, 1fr);
+  grid-template-columns: repeat(${cols}, minmax(0, 1fr));
   gap: ${rowGap}px ${colGap}px;
   padding: ${topPad}px ${sidePad}px;
 }
@@ -109,6 +115,8 @@ body {
   border: ${px(4)}px solid #000;
   background: #fff;
   height: ${tileH}px;
+  min-width: 0;
+  overflow: hidden;
 }
 .bt-time {
   background: #000;
@@ -229,7 +237,7 @@ export function renderFull(
 ): string {
   return renderBrutalist(data, {
     viewport: { width: screen.width, height: screen.height },
-    cols: screen.width >= 1500 ? 3 : 2,
+    cols: colsForWidth(screen.width),
   });
 }
 
@@ -242,7 +250,7 @@ export function renderHalfHorizontal(
       width: screen.width,
       height: Math.floor(screen.height / 2),
     },
-    cols: screen.width >= 1500 ? 3 : 2,
+    cols: colsForWidth(screen.width),
     baseTileH: 70,
     baseHeaderH: 32,
     showHeadsign: false,

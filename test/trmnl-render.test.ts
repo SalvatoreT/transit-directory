@@ -67,13 +67,13 @@ describe("TRMNL render - tile count per layout", () => {
     const html = renderHalfVertical(makeData(10));
     const tiles = countTiles(html);
     expect(tiles).toBeGreaterThanOrEqual(3);
-    expect(html).toContain("repeat(1, 1fr)");
+    expect(html).toContain("repeat(1, minmax(0, 1fr))");
   });
 
   it("renderQuadrant OG renders 3 compact tiles", () => {
     const html = renderQuadrant(makeData(10));
     expect(countTiles(html)).toBe(3);
-    expect(html).toContain("repeat(1, 1fr)");
+    expect(html).toContain("repeat(1, minmax(0, 1fr))");
   });
 
   it("under-fills with dashed empty placeholders", () => {

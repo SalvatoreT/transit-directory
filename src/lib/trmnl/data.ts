@@ -101,7 +101,7 @@ export async function getTrmnlData(
   const now = DateTime.now().setZone(agency_timezone);
   const midnight = now.startOf("day");
   const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
-  const twoHoursLaterSeconds = currentSeconds + 2 * 60 * 60;
+  const endOfDaySeconds = 24 * 60 * 60;
   const todayNoon = midnight.set({ hour: 12 }).toSeconds()!;
   const days = [
     "sunday",
@@ -118,7 +118,7 @@ export async function getTrmnlData(
     feed_version_id,
     stopPks,
     currentSeconds,
-    twoHoursLaterSeconds,
+    endSeconds: endOfDaySeconds,
     todayNoon,
     todayColumn,
   });
