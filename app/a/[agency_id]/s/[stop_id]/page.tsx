@@ -53,7 +53,7 @@ export default async function StopPage({
   const now = DateTime.now().setZone(agency_timezone);
   const midnight = now.startOf("day");
   const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
-  const twoHoursLaterSeconds = currentSeconds + 2 * 60 * 60;
+  const endSeconds = currentSeconds + 2 * 60 * 60;
   const todayNoon = midnight.set({ hour: 12 }).toSeconds()!;
   const days = [
     "sunday",
@@ -72,7 +72,7 @@ export default async function StopPage({
       feed_version_id,
       stopPks,
       currentSeconds,
-      twoHoursLaterSeconds,
+      endSeconds,
       todayNoon,
       todayColumn,
     });

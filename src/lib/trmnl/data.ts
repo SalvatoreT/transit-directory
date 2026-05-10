@@ -118,7 +118,7 @@ export async function getTrmnlData(
     feed_version_id,
     stopPks,
     currentSeconds,
-    twoHoursLaterSeconds: endOfDaySeconds,
+    endSeconds: endOfDaySeconds,
     todayNoon,
     todayColumn,
   });

@@ -107,7 +107,7 @@ export interface DeparturesFilter {
   stopPks?: number[];
   route_pk?: number;
   currentSeconds: number;
-  twoHoursLaterSeconds: number;
+  endSeconds: number;
   todayNoon: number;
   todayColumn: string;
 }
@@ -305,7 +305,7 @@ export async function getDepartures(
     stopPks,
     route_pk,
     currentSeconds,
-    twoHoursLaterSeconds,
+    endSeconds,
     todayNoon,
     todayColumn,
   } = filter;
@@ -328,7 +328,7 @@ export async function getDepartures(
     params.push(route_pk);
   }
 
-  params.push(currentSeconds, twoHoursLaterSeconds);
+  params.push(currentSeconds, endSeconds);
   const calendarParams = [todayNoon, todayNoon, todayNoon, todayNoon];
 
   const query = `
