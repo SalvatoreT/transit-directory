@@ -1208,23 +1208,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
                 location_group_id, location_id, start_pickup_drop_off_window, end_pickup_drop_off_window,
                 continuous_pickup, continuous_drop_off, pickup_booking_rule_id, drop_off_booking_rule_id
               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(trip_pk, stop_sequence) DO UPDATE SET
-                stop_pk = excluded.stop_pk,
-                arrival_time = excluded.arrival_time,
-                departure_time = excluded.departure_time,
-                stop_headsign = excluded.stop_headsign,
-                pickup_type = excluded.pickup_type,
-                drop_off_type = excluded.drop_off_type,
-                shape_dist_traveled = excluded.shape_dist_traveled,
-                timepoint = excluded.timepoint,
-                location_group_id = excluded.location_group_id,
-                location_id = excluded.location_id,
-                start_pickup_drop_off_window = excluded.start_pickup_drop_off_window,
-                end_pickup_drop_off_window = excluded.end_pickup_drop_off_window,
-                continuous_pickup = excluded.continuous_pickup,
-                continuous_drop_off = excluded.continuous_drop_off,
-                pickup_booking_rule_id = excluded.pickup_booking_rule_id,
-                drop_off_booking_rule_id = excluded.drop_off_booking_rule_id
+              ON CONFLICT(trip_pk, stop_sequence) DO NOTHING
             `,
             );
 
@@ -1354,10 +1338,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
               INSERT INTO shapes (
                 feed_version_id, shape_id, shape_pt_lat, shape_pt_lon, shape_pt_sequence, shape_dist_traveled
               ) VALUES (?, ?, ?, ?, ?, ?)
-              ON CONFLICT(feed_version_id, shape_id, shape_pt_sequence) DO UPDATE SET
-                shape_pt_lat = excluded.shape_pt_lat,
-                shape_pt_lon = excluded.shape_pt_lon,
-                shape_dist_traveled = excluded.shape_dist_traveled
+              ON CONFLICT(feed_version_id, shape_id, shape_pt_sequence) DO NOTHING
             `,
             );
 
