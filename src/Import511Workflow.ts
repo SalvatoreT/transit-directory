@@ -367,31 +367,6 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
                   "UPDATE trip_updates SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
                 )
                 .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "UPDATE vehicle_positions SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "UPDATE vehicle_positions SET route_pk = NULL WHERE route_pk IN (SELECT route_pk FROM routes WHERE feed_version_id = ?)",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "UPDATE service_alerts SET affected_trip_pk = NULL WHERE affected_trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "UPDATE service_alerts SET affected_route_pk = NULL WHERE affected_route_pk IN (SELECT route_pk FROM routes WHERE feed_version_id = ?)",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "UPDATE service_alerts SET affected_stop_pk = NULL WHERE affected_stop_pk IN (SELECT stop_pk FROM stops WHERE feed_version_id = ?)",
-                )
-                .bind(feedVersionId),
 
               // Delete static data
               this.env.gtfs_data
