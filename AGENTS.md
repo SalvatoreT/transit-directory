@@ -2,7 +2,7 @@
 
 ## Startup
 
-- **IMPORTANT**: Always activate the Serena MCP server at the start of every session. Use the `serena_activate_project` tool with `project_dir` set to `.` before doing any work.
+- The Serena MCP server is configured in `.mcp.json` and activates this project automatically; there is no separate activation tool to call. If the server exposes `initial_instructions`, read it before starting code work.
 - **IMPORTANT**: Always run `yarn install` before running any openspec skills (`openspec-explore`, `openspec-propose`, `openspec-apply-change`, `openspec-archive-change`).
 
 ## Project Structure & Module Organization

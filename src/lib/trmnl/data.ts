@@ -31,6 +31,10 @@ export interface TrmnlStopData {
   lastUpdated: string;
 }
 
+// Largest departure list any TRMNL layout can render (TRMNL X full layout
+// caps out below this).
+const MAX_TRMNL_DEPARTURES = 30;
+
 function formatDeparture(
   dep: DeparturesData,
   timezone: string,
@@ -121,13 +125,18 @@ export async function getTrmnlData(
     endSeconds: endOfDaySeconds,
     todayNoon,
     todayColumn,
+    nowEpochSeconds: Math.floor(now.toSeconds()),
   });
 
   return {
     stopName: displayName || parentStop.stop_name,
     stopId,
     agencyName: agency_name,
-    departures: departures.map((d) => formatDeparture(d, agency_timezone)),
+    // departureCount keeps the full rest-of-day total (the display shows it),
+    // but no layout renders more than ~27 rows, so cap the payload.
+    departures: departures
+      .slice(0, MAX_TRMNL_DEPARTURES)
+      .map((d) => formatDeparture(d, agency_timezone)),
     departureCount: departures.length,
     lastUpdated: new Date().toISOString(),
   };

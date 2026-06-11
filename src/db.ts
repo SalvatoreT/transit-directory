@@ -1,4 +1,19 @@
 import { env } from "cloudflare:workers";
+import { cache } from "react";
+import {
+  AGENCY_COLUMNS,
+  ROUTE_COLUMNS,
+  ROUTE_STOPS_LIMIT,
+  STOP_COLUMNS,
+  TRIP_COLUMNS,
+  buildDeparturesQuery,
+  buildTripStopsQuery,
+  columnList,
+  type DeparturesFilter,
+} from "./db-queries";
+
+export { REALTIME_STALENESS_SECONDS } from "./db-queries";
+export type { DeparturesFilter } from "./db-queries";
 
 // Types
 export interface AgenciesData {
@@ -99,17 +114,6 @@ export interface StopsFilter {
 export interface RoutesFilter {
   feed_version_id: number;
   agency_pk?: number;
-  route_pk?: number;
-}
-
-export interface DeparturesFilter {
-  feed_version_id: number;
-  stopPks?: number[];
-  route_pk?: number;
-  currentSeconds: number;
-  endSeconds: number;
-  todayNoon: number;
-  todayColumn: string;
 }
 
 function getDb() {
@@ -117,30 +121,35 @@ function getDb() {
   return db.withSession("first-unconstrained");
 }
 
-export async function getAgencies(): Promise<AgenciesData[]> {
+// Single-row getters with primitive arguments are wrapped in React cache()
+// so generateMetadata and the page body share one D1 read per request.
+// (cache() keys by argument identity, so the object-filter getters below
+// would never hit and stay unwrapped.)
+
+export const getAgencies = cache(async (): Promise<AgenciesData[]> => {
   const result = await getDb()
     .prepare(
-      "SELECT a.* FROM agency a JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id WHERE fv.is_active = 1",
+      `SELECT ${columnList(AGENCY_COLUMNS, "a")} FROM agency a JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id WHERE fv.is_active = 1`,
     )
     .all<AgenciesData>();
   return result.results;
-}
+});
 
-export async function getAgency(
-  agencyId: string,
-): Promise<AgenciesData | null> {
-  const result = await getDb()
-    .prepare(
-      "SELECT a.* FROM agency a JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id WHERE a.agency_id = ? AND fv.is_active = 1",
-    )
-    .bind(agencyId)
-    .first<AgenciesData>();
-  return result;
-}
+export const getAgency = cache(
+  async (agencyId: string): Promise<AgenciesData | null> => {
+    const result = await getDb()
+      .prepare(
+        `SELECT ${columnList(AGENCY_COLUMNS, "a")} FROM agency a JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id WHERE a.agency_id = ? AND fv.is_active = 1`,
+      )
+      .bind(agencyId)
+      .first<AgenciesData>();
+    return result;
+  },
+);
 
 export async function getStops(filter: StopsFilter): Promise<StopsData[]> {
   const { feed_version_id, is_parent, parent_station_pk } = filter;
-  let query = "SELECT * FROM stops";
+  let query = `SELECT ${columnList(STOP_COLUMNS)} FROM stops`;
   const params: any[] = [];
   const conditions: string[] = [];
 
@@ -169,20 +178,21 @@ export async function getStops(filter: StopsFilter): Promise<StopsData[]> {
   return result.results;
 }
 
-export async function getStop(
-  stopId: string,
-  feedVersionId: number,
-): Promise<StopsData | null> {
-  const result = await getDb()
-    .prepare("SELECT * FROM stops WHERE stop_id = ? AND feed_version_id = ?")
-    .bind(stopId, feedVersionId)
-    .first<StopsData>();
-  return result;
-}
+export const getStop = cache(
+  async (stopId: string, feedVersionId: number): Promise<StopsData | null> => {
+    const result = await getDb()
+      .prepare(
+        `SELECT ${columnList(STOP_COLUMNS)} FROM stops WHERE stop_id = ? AND feed_version_id = ?`,
+      )
+      .bind(stopId, feedVersionId)
+      .first<StopsData>();
+    return result;
+  },
+);
 
 export async function getRoutes(filter: RoutesFilter): Promise<RoutesData[]> {
-  const { feed_version_id, agency_pk, route_pk } = filter;
-  let query = "SELECT * FROM routes";
+  const { feed_version_id, agency_pk } = filter;
+  let query = `SELECT ${columnList(ROUTE_COLUMNS)} FROM routes`;
   const params: any[] = [];
   const conditions: string[] = [];
 
@@ -194,11 +204,6 @@ export async function getRoutes(filter: RoutesFilter): Promise<RoutesData[]> {
   if (agency_pk !== undefined) {
     conditions.push("agency_pk = ?");
     params.push(agency_pk);
-  }
-
-  if (route_pk !== undefined) {
-    conditions.push("route_pk = ?");
-    params.push(route_pk);
   }
 
   if (conditions.length > 0) {
@@ -214,16 +219,32 @@ export async function getRoutes(filter: RoutesFilter): Promise<RoutesData[]> {
   return result.results;
 }
 
-export async function getRoute(
-  routeId: string,
-  feedVersionId: number,
-): Promise<RoutesData | null> {
-  const result = await getDb()
-    .prepare("SELECT * FROM routes WHERE route_id = ? AND feed_version_id = ?")
-    .bind(routeId, feedVersionId)
-    .first<RoutesData>();
-  return result;
-}
+export const getRoute = cache(
+  async (
+    routeId: string,
+    feedVersionId: number,
+  ): Promise<RoutesData | null> => {
+    const result = await getDb()
+      .prepare(
+        `SELECT ${columnList(ROUTE_COLUMNS)} FROM routes WHERE route_id = ? AND feed_version_id = ?`,
+      )
+      .bind(routeId, feedVersionId)
+      .first<RoutesData>();
+    return result;
+  },
+);
+
+export const getRouteByPk = cache(
+  async (routePk: number): Promise<RoutesData | null> => {
+    const result = await getDb()
+      .prepare(
+        `SELECT ${columnList(ROUTE_COLUMNS)} FROM routes WHERE route_pk = ?`,
+      )
+      .bind(routePk)
+      .first<RoutesData>();
+    return result;
+  },
+);
 
 export async function getRouteStops(routePk: number): Promise<RouteStopData[]> {
   const query = `
@@ -247,7 +268,7 @@ export async function getRouteStops(routePk: number): Promise<RouteStopData[]> {
         ) WHERE rn = 1
     )
     SELECT
-        s.*,
+        ${columnList(STOP_COLUMNS, "s")},
         bt.direction_id,
         bt.trip_headsign,
         st.stop_sequence
@@ -255,6 +276,7 @@ export async function getRouteStops(routePk: number): Promise<RouteStopData[]> {
     JOIN stop_times st ON s.stop_pk = st.stop_pk
     JOIN BestTrips bt ON st.trip_pk = bt.trip_pk
     ORDER BY bt.direction_id, st.stop_sequence
+    LIMIT ${ROUTE_STOPS_LIMIT}
   `;
 
   const result = await getDb()
@@ -264,126 +286,41 @@ export async function getRouteStops(routePk: number): Promise<RouteStopData[]> {
   return result.results;
 }
 
-export async function getTrip(
-  tripId: string,
-  feedVersionId: number,
-): Promise<TripData | null> {
+export const getTrip = cache(
+  async (tripId: string, feedVersionId: number): Promise<TripData | null> => {
+    const result = await getDb()
+      .prepare(
+        `SELECT ${columnList(TRIP_COLUMNS)} FROM trips WHERE trip_id = ? AND feed_version_id = ?`,
+      )
+      .bind(tripId, feedVersionId)
+      .first<TripData>();
+    return result;
+  },
+);
+
+export async function getTripStops(
+  tripPk: number,
+  nowEpochSeconds: number,
+): Promise<TripStopData[]> {
+  const { sql, params } = buildTripStopsQuery(tripPk, nowEpochSeconds);
   const result = await getDb()
-    .prepare("SELECT * FROM trips WHERE trip_id = ? AND feed_version_id = ?")
-    .bind(tripId, feedVersionId)
-    .first<TripData>();
-  return result;
-}
-
-export async function getTripStops(tripPk: number): Promise<TripStopData[]> {
-  const query = `
-    SELECT
-        s.*,
-        st.arrival_time,
-        st.departure_time,
-        st.stop_sequence,
-        st.timepoint,
-        st.pickup_type,
-        st.drop_off_type,
-        tu.delay
-    FROM stops s
-    JOIN stop_times st ON s.stop_pk = st.stop_pk
-    LEFT JOIN trip_updates tu ON tu.trip_pk = st.trip_pk
-    WHERE st.trip_pk = ?
-    ORDER BY st.stop_sequence ASC
-  `;
-
-  const result = await getDb().prepare(query).bind(tripPk).all<TripStopData>();
+    .prepare(sql)
+    .bind(...params)
+    .all<TripStopData>();
   return result.results;
 }
 
 export async function getDepartures(
   filter: DeparturesFilter,
 ): Promise<DeparturesData[]> {
-  const {
-    feed_version_id,
-    stopPks,
-    route_pk,
-    currentSeconds,
-    endSeconds,
-    todayNoon,
-    todayColumn,
-  } = filter;
-
-  if (!feed_version_id) {
+  if (!filter.feed_version_id) {
     return [];
   }
 
-  const conditions: string[] = ["s.feed_version_id = ?"];
-  const params: any[] = [feed_version_id];
-
-  if (stopPks && stopPks.length > 0) {
-    const placeholders = stopPks.map(() => "?").join(",");
-    conditions.push(`s.stop_pk IN (${placeholders})`);
-    params.push(...stopPks);
-  }
-
-  if (route_pk !== undefined) {
-    conditions.push("r.route_pk = ?");
-    params.push(route_pk);
-  }
-
-  params.push(currentSeconds, endSeconds);
-  const calendarParams = [todayNoon, todayNoon, todayNoon, todayNoon];
-
-  const query = `
-    SELECT
-        s.stop_pk,
-        s.stop_id,
-        r.route_id,
-        t.trip_id,
-        r.route_short_name,
-        r.route_long_name,
-        r.route_color,
-        r.route_text_color,
-        t.trip_headsign,
-        st.departure_time,
-        st.stop_sequence,
-        tu.delay,
-        tu.status as realtime_status
-    FROM stop_times st
-    JOIN stops s ON st.stop_pk = s.stop_pk
-    JOIN trips t ON st.trip_pk = t.trip_pk
-    JOIN routes r ON t.route_pk = r.route_pk
-    LEFT JOIN trip_updates tu ON tu.trip_pk = t.trip_pk
-    WHERE ${conditions.join(" AND ")}
-      AND st.departure_time >= ?
-      AND st.departure_time <= ?
-      AND (
-        EXISTS (
-            SELECT 1 FROM calendar c
-            WHERE c.feed_version_id = s.feed_version_id
-              AND c.service_id = t.service_id
-              AND c.start_date <= ?
-              AND c.end_date >= ?
-              AND c.${todayColumn} = 1
-        )
-        OR EXISTS (
-            SELECT 1 FROM calendar_dates cd
-            WHERE cd.feed_version_id = s.feed_version_id
-              AND cd.service_id = t.service_id
-              AND cd.date = ?
-              AND cd.exception_type = 1
-        )
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM calendar_dates cd
-        WHERE cd.feed_version_id = s.feed_version_id
-          AND cd.service_id = t.service_id
-          AND cd.date = ?
-          AND cd.exception_type = 2
-      )
-    ORDER BY st.departure_time ASC
-  `;
-
+  const { sql, params } = buildDeparturesQuery(filter);
   const result = await getDb()
-    .prepare(query)
-    .bind(...params, ...calendarParams)
+    .prepare(sql)
+    .bind(...params)
     .all<DeparturesData>();
   return result.results;
 }
