@@ -3,9 +3,62 @@
 This document defines a **complete GTFS database schema** and a **step‑by‑step SQL plan** for storing:
 
 - GTFS **static** feeds from **multiple agencies**
-- GTFS‑Realtime (**vehicle positions**, **trip updates**, **service alerts**)
+- GTFS‑Realtime **trip updates**
 
 The target DB is **SQLite** (Cloudflare D1). The instructions are written so that another AI or automation can follow them deterministically.
+
+---
+
+## Schema evolution (how the live schema differs from this design)
+
+This document is the original design; the live schema is whatever the
+`migrations/` directory produces. Where they disagree, the migrations win.
+Key deltas, by migration:
+
+- **Dates and times are INTEGER, not TEXT** (0001). Calendar dates
+  (`calendar.start_date`/`end_date`, `calendar_dates.date`,
+  `feed_version.feed_*_date`, `feed_info.feed_*_date`) are Unix epoch
+  seconds, parsed at noon in the agency's timezone to dodge DST edges.
+  Times of day (`stop_times.arrival_time`/`departure_time`,
+  `frequencies.start_time`/`end_time`) are seconds after midnight and may
+  exceed 86400 for post-midnight service. `trip_updates.updated_time` and
+  `feed_version.date_added` are Unix epoch seconds.
+- **GTFS v2 / Flex additions** (0004): new tables `areas`, `stop_areas`,
+  `networks`, `route_networks`, `timeframes`, `rider_categories`,
+  `fare_media`, `fare_products`, `fare_leg_rules`, `fare_leg_join_rules`,
+  `fare_transfer_rules`, `location_groups`, `location_group_stops`,
+  `booking_rules`, `translations`, plus columns such as
+  `agency.cemv_support`, `stops.tts_stop_name`/`stop_access`,
+  `routes.cemv_support`, `trips.cars_allowed`, and `stop_times` Flex
+  columns (`location_group_id`, `continuous_pickup`/`continuous_drop_off`,
+  `start/end_pickup_drop_off_window`, booking rule ids, etc.).
+- **Index changes** (0005, 0007, 0008, 0009, 0012): the live lookup
+  indexes are `idx_trip_updates_trip_pk`, `idx_calendar_dates_lookup`,
+  `idx_trips_trip_id`, `idx_routes_route_id`, `idx_stops_stop_id`,
+  `idx_stops_parent_station (feed_version_id, parent_station)`,
+  `idx_stop_times_departure (stop_pk, departure_time)`, and
+  `idx_stop_times_trip_departure`. The originally recommended
+  `idx_stop_times_trip`, `idx_stop_times_stop`, and `idx_shapes_id_seq`
+  were dropped in 0012 as duplicates of UNIQUE constraints or dead weight
+  (each redundant index taxes every import write).
+- **`trip_updates` is a state table** (0002/0003 made it historical; 0011
+  collapsed it back): one row per `(feed_source_id, trip_id)`, written with
+  a guarded UPSERT that skips no-op writes. Readers must filter
+  `updated_time` for freshness (see `REALTIME_STALENESS_SECONDS` in
+  `src/db-queries.ts`); rows older than 24h are purged daily.
+- **`vehicle_positions` and `service_alerts` were dropped** (0014). The
+  realtime workflow never wrote vehicle positions, and service alerts had
+  no reader while dominating D1 row writes. Sections 4.1/4.3 below are
+  retained for historical context only.
+- **`feed_version.deactivated_at`** (0015): set when a version stops being
+  active. Versions inactive for longer than the retention window (7 days;
+  `VERSION_RETENTION_SECONDS` in `src/cleanup-queries.ts`) have all their
+  data deleted by the daily import workflow in FK-safe batched passes.
+- **Import lifecycle**: `Import511Workflow` inserts new versions with
+  `is_active = 0`, imports everything, then atomically swaps activation in
+  a final step. A feed zip whose SHA-256 matches the active version skips
+  all staging and import work; a hash match on an inactive version means a
+  crashed import and triggers a full re-import into that version id.
 
 ---
 
@@ -22,7 +75,7 @@ The target DB is **SQLite** (Cloudflare D1). The instructions are written so tha
 
 3. **Static vs Realtime separation**
    - Static tables: schedule + topology (routes, stops, trips, stop_times, etc.).
-   - Realtime tables: `vehicle_positions`, `trip_updates`, `service_alerts`.
+   - Realtime tables: `trip_updates` (`vehicle_positions` and `service_alerts` were designed here but dropped in migration 0014; see sections 4.1/4.3).
    - Realtime records reference static data via `feed_source_id` and/or `feed_version_id` and static `*_pk` keys.
 
 4. **Spatial support**
@@ -67,11 +120,12 @@ Represents **one GTFS ZIP file** imported from a `feed_source`.
 CREATE TABLE IF NOT EXISTS feed_version (
     feed_version_id   INTEGER PRIMARY KEY AUTOINCREMENT,
     feed_source_id    INTEGER NOT NULL REFERENCES feed_source(feed_source_id),
-    version_label     TEXT,        -- arbitrary label: "2025‑Spring‑v1" etc.
-    date_added        TEXT NOT NULL DEFAULT (DATE('now')),
-    feed_start_date   TEXT,        -- from feed_info or derived from calendar
-    feed_end_date     TEXT,
+    version_label     TEXT,        -- "511-{operator}-{sha256 of the zip}"
+    date_added        INTEGER NOT NULL DEFAULT (unixepoch()),
+    feed_start_date   INTEGER,     -- unix seconds, from feed_info or calendar
+    feed_end_date     INTEGER,     -- unix seconds
     is_active         INTEGER NOT NULL DEFAULT 0,  -- 1 = currently active for this source
+    deactivated_at    INTEGER,     -- unix seconds; set when superseded (0015)
     UNIQUE(feed_source_id, version_label)
 );
 ```
@@ -80,11 +134,12 @@ CREATE TABLE IF NOT EXISTS feed_version (
 
 - When importing a new GTFS ZIP for agency X:
   1. Ensure `feed_source` exists (insert if missing).
-  2. Insert a new `feed_version` row with:
+  2. Insert a new `feed_version` row with `is_active = 0` and:
      - `feed_source_id` = that agency’s `feed_source_id`
-     - `version_label` = some deterministic label (e.g., filename or timestamp)
+     - `version_label` = `511-{operator}-{sha256 of the zip}` (content-addressed, so re-importing identical content is a no-op)
      - `feed_start_date`/`feed_end_date` from `feed_info.txt` if present.
-  3. Optionally set `is_active = 1` and set previous versions for this source to `0`.
+  3. Only after **every** table imported successfully, atomically swap activation: set `is_active = 0, deactivated_at = COALESCE(deactivated_at, unixepoch())` on the source's other versions and `is_active = 1, deactivated_at = NULL` on the new one. A crashed import therefore never becomes the live version, and readers see the old version until the swap.
+  4. Versions inactive longer than the retention window are deleted by the daily cleanup (section 7.2).
 
 ---
 
@@ -262,8 +317,8 @@ CREATE TABLE IF NOT EXISTS calendar (
     friday          INTEGER NOT NULL,
     saturday        INTEGER NOT NULL,
     sunday          INTEGER NOT NULL,
-    start_date      TEXT NOT NULL,  -- "YYYYMMDD"
-    end_date        TEXT NOT NULL,  -- "YYYYMMDD"
+    start_date      INTEGER NOT NULL,  -- unix seconds (GTFS YYYYMMDD parsed at agency-noon)
+    end_date        INTEGER NOT NULL,  -- unix seconds
     UNIQUE(feed_version_id, service_id)
 );
 ```
@@ -275,7 +330,7 @@ CREATE TABLE IF NOT EXISTS calendar_dates (
     caldate_pk      INTEGER PRIMARY KEY AUTOINCREMENT,
     feed_version_id INTEGER NOT NULL REFERENCES feed_version(feed_version_id),
     service_id      TEXT NOT NULL,      -- references calendar.service_id or exists on its own
-    date            TEXT NOT NULL,      -- "YYYYMMDD"
+    date            INTEGER NOT NULL,   -- unix seconds (GTFS YYYYMMDD parsed at agency-noon)
     exception_type  INTEGER NOT NULL    -- 1=added service, 2=removed service
 );
 ```
@@ -337,8 +392,8 @@ CREATE TABLE IF NOT EXISTS stop_times (
     trip_pk          INTEGER NOT NULL REFERENCES trips(trip_pk),
     stop_pk          INTEGER NOT NULL REFERENCES stops(stop_pk),
     stop_sequence    INTEGER NOT NULL,
-    arrival_time     TEXT,     -- "HH:MM:SS" or >24h syntax allowed; kept as TEXT
-    departure_time   TEXT,
+    arrival_time     INTEGER,  -- seconds after midnight; >86400 for post-midnight service
+    departure_time   INTEGER,  -- seconds after midnight
     stop_headsign    TEXT,
     pickup_type      INTEGER,
     drop_off_type    INTEGER,
@@ -348,14 +403,17 @@ CREATE TABLE IF NOT EXISTS stop_times (
 );
 ```
 
-**Indexes**
+**Indexes (live)**
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_stop_times_trip
-    ON stop_times(trip_pk, stop_sequence);
+-- Departures-at-a-stop range scan (0008); the original
+-- idx_stop_times_trip / idx_stop_times_stop were dropped in 0012 as
+-- duplicates of UNIQUE(trip_pk, stop_sequence) / dead weight.
+CREATE INDEX IF NOT EXISTS idx_stop_times_departure
+    ON stop_times(stop_pk, departure_time);
 
-CREATE INDEX IF NOT EXISTS idx_stop_times_stop
-    ON stop_times(stop_pk, arrival_time);
+CREATE INDEX IF NOT EXISTS idx_stop_times_trip_departure
+    ON stop_times(trip_pk, departure_time);
 ```
 
 **Import strategy**
@@ -386,10 +444,9 @@ CREATE TABLE IF NOT EXISTS shapes (
 
 **Indexes**
 
-```sql
-CREATE INDEX IF NOT EXISTS idx_shapes_id_seq
-    ON shapes(feed_version_id, shape_id, shape_pt_sequence);
-```
+No extra index: `UNIQUE(feed_version_id, shape_id, shape_pt_sequence)`
+already provides the lookup path (the redundant `idx_shapes_id_seq` was
+dropped in migration 0012).
 
 ---
 
@@ -463,8 +520,8 @@ CREATE TABLE IF NOT EXISTS transfers (
 CREATE TABLE IF NOT EXISTS frequencies (
     frequency_pk     INTEGER PRIMARY KEY AUTOINCREMENT,
     trip_pk          INTEGER NOT NULL REFERENCES trips(trip_pk),
-    start_time       TEXT NOT NULL,   -- HH:MM:SS
-    end_time         TEXT NOT NULL,   -- HH:MM:SS
+    start_time       INTEGER NOT NULL,   -- seconds after midnight
+    end_time         INTEGER NOT NULL,   -- seconds after midnight
     headway_secs     INTEGER NOT NULL,
     exact_times      INTEGER          -- 0 or 1
 );
@@ -545,75 +602,14 @@ CREATE TABLE IF NOT EXISTS attributions (
 
 Realtime tables are **logically separate** but tied to `feed_source` and static entities.
 
-### 4.1 `vehicle_positions` (GTFS‑Realtime VehiclePosition)
+### 4.1 `vehicle_positions` (GTFS‑Realtime VehiclePosition) — DROPPED
 
-```sql
-CREATE TABLE IF NOT EXISTS vehicle_positions (
-    feed_source_id   INTEGER NOT NULL REFERENCES feed_source(feed_source_id),
-    vehicle_id       TEXT   NOT NULL,      -- GTFS‑RT vehicle.id or label
-    trip_pk          INTEGER REFERENCES trips(trip_pk),
-    route_pk         INTEGER REFERENCES routes(route_pk),
-    latitude         REAL,
-    longitude        REAL,
-    speed            REAL,                 -- m/s or consistent unit
-    heading          REAL,                 -- degrees 0‑359
-    timestamp        TEXT NOT NULL,        -- ISO8601 or UNIX seconds as TEXT
-    current_status   TEXT,                 -- e.g. "IN_TRANSIT", "STOPPED_AT"
-    occupancy_status TEXT,                 -- e.g. "MANY_SEATS_AVAILABLE"
-    PRIMARY KEY (feed_source_id, vehicle_id)
-);
-```
-
-**AI update algorithm**
-
-For each GTFS‑RT vehicle entity:
-
-1. Determine `feed_source_id` (based on config).
-2. Map GTFS‑RT `trip_id` (if present) to `trip_pk`:
-   - Query active `feed_version` for this `feed_source_id`:
-     ```sql
-     SELECT feed_version_id
-     FROM feed_version
-     WHERE feed_source_id = :source
-       AND is_active = 1;
-     ```
-   - Then map `trip_id` to `trip_pk`:
-     ```sql
-     SELECT trip_pk
-     FROM trips
-     WHERE feed_version_id = :feed_version_id
-       AND trip_id = :gtfs_trip_id;
-     ```
-3. Map `route_id` if provided similarly to `route_pk`.
-4. UPSERT:
-
-```sql
-INSERT OR REPLACE INTO vehicle_positions (
-    feed_source_id, vehicle_id, trip_pk, route_pk,
-    latitude, longitude, speed, heading, timestamp,
-    current_status, occupancy_status
-) VALUES (
-    :feed_source_id, :vehicle_id, :trip_pk, :route_pk,
-    :lat, :lon, :speed, :heading, :timestamp,
-    :current_status, :occupancy_status
-);
-```
-
-**Optional spatial index**
-
-If available:
-
-```sql
-CREATE INDEX IF NOT EXISTS idx_vehicle_positions_route
-    ON vehicle_positions(feed_source_id, route_pk);
-```
-
-And optionally:
-
-```sql
-CREATE INDEX IF NOT EXISTS idx_vehicle_positions_lat_lon
-    ON vehicle_positions(feed_source_id, latitude, longitude);
-```
+> **Dropped in migration 0014.** The table was designed (one row per
+> `(feed_source_id, vehicle_id)`, upserted from the GTFS‑RT vehicles feed)
+> but the realtime workflow never wrote it and nothing read it; the only
+> references were FK-cleanup statements in the import workflow. If vehicle
+> tracking is ever needed, reintroduce it with a fresh migration and an
+> actual reader.
 
 ---
 
@@ -622,76 +618,70 @@ CREATE INDEX IF NOT EXISTS idx_vehicle_positions_lat_lon
 ```sql
 CREATE TABLE IF NOT EXISTS trip_updates (
     feed_source_id   INTEGER NOT NULL REFERENCES feed_source(feed_source_id),
-    trip_id          TEXT NOT NULL,           -- GTFS trip_id
+    trip_id          TEXT NOT NULL,           -- GTFS trip_id (agency prefix stripped)
     trip_pk          INTEGER REFERENCES trips(trip_pk),
     delay            INTEGER,                 -- seconds (positive = late)
-    status           TEXT,                    -- e.g. "ON_TIME", "DELAYED", "CANCELED"
-    updated_time     TEXT NOT NULL,           -- ISO8601 or UNIX seconds as TEXT
+    status           TEXT,                    -- "SCHEDULED", "ADDED", "UNSCHEDULED", "CANCELED"
+    updated_time     INTEGER NOT NULL,        -- unix seconds (feed header timestamp)
     PRIMARY KEY (feed_source_id, trip_id)
 );
 ```
 
-**AI update algorithm**
+**Update algorithm (as implemented in `Import511RealtimeWorkflow`)**
 
 For each GTFS‑RT TripUpdate:
 
-1. Resolve active `feed_version_id` for the `feed_source_id`.
-2. Resolve `trip_pk` similarly to vehicle_positions.
-3. Compute a representative `delay`:
-   - If there’s a `delay` at the trip or first StopTimeUpdate, use it.
-   - If unavailable, can be `NULL`.
-4. Set `status` based on `schedule_relationship` (if `CANCELED`, set `"CANCELED"`, etc.).
-5. UPSERT:
+1. Strip the regional agency prefix from `trip_id` (`"BA:123"` → `"123"`).
+2. Resolve `trip_pk`/`feed_source_id` across all **active** feed versions;
+   the lookup map is cached across polling iterations and invalidated when a
+   static import activates a new version.
+3. Compute a representative `delay`: trip-level delay, else the first
+   StopTimeUpdate's arrival/departure delay, else 0.
+4. Map `schedule_relationship` to `status` (1=ADDED, 2=UNSCHEDULED, 3=CANCELED, else SCHEDULED).
+5. UPSERT, guarded so identical state writes nothing (no row churn, no index
+   churn):
 
 ```sql
-INSERT OR REPLACE INTO trip_updates (
-    feed_source_id, trip_id, trip_pk, delay, status, updated_time
-) VALUES (
-    :feed_source_id, :trip_id, :trip_pk, :delay, :status, :updated_time
-);
+INSERT INTO trip_updates (feed_source_id, trip_id, trip_pk, delay, status, updated_time)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(feed_source_id, trip_id) DO UPDATE SET
+    trip_pk      = excluded.trip_pk,
+    delay        = excluded.delay,
+    status       = excluded.status,
+    updated_time = excluded.updated_time
+WHERE excluded.updated_time > trip_updates.updated_time
+   OR excluded.delay   IS NOT trip_updates.delay
+   OR excluded.status  IS NOT trip_updates.status
+   OR excluded.trip_pk IS NOT trip_updates.trip_pk;
 ```
+
+**Reading**
+
+Rows persist between polls, so readers must treat old rows as "no realtime
+data": every join filters `tu.updated_time >= now - REALTIME_STALENESS_SECONDS`
+(15 minutes; see `src/db-queries.ts`). Without this filter, yesterday's delay
+would render as live today.
 
 **Cleanup**
 
 The composite primary key `(feed_source_id, trip_id)` keeps the table at one
-row per active trip, so no time-based retention job is required. Rows for
-trips that disappear from the feed are cleared on the next static feed import
-(see `Import511Workflow` clearing `trip_pk` when versions are swapped).
+row per known trip. The daily import additionally purges rows with
+`updated_time` older than 24h (`TRIP_UPDATES_RETENTION_SECONDS` in
+`src/cleanup-queries.ts`) and version cleanup nulls `trip_pk` before deleting
+the trips a row references.
 
 ---
 
-### 4.3 `service_alerts` (GTFS‑Realtime Alert)
+### 4.3 `service_alerts` (GTFS‑Realtime Alert) — DROPPED
 
-Simplified schema (one row per alert). More complex many‑to‑many mappings can be added if needed.
-
-```sql
-CREATE TABLE IF NOT EXISTS service_alerts (
-    alert_pk         INTEGER PRIMARY KEY AUTOINCREMENT,
-    feed_source_id   INTEGER NOT NULL REFERENCES feed_source(feed_source_id),
-    alert_id         TEXT,          -- GTFS‑RT alert.id if present
-    header           TEXT,
-    description      TEXT,
-    cause            TEXT,
-    effect           TEXT,
-    start_time       TEXT,
-    end_time         TEXT,
-    severity_level   TEXT,
-    affected_route_pk   INTEGER REFERENCES routes(route_pk),
-    affected_stop_pk    INTEGER REFERENCES stops(stop_pk),
-    affected_trip_pk    INTEGER REFERENCES trips(trip_pk)
-);
-```
-
-**AI update strategy (simple)**
-
-- On each GTFS‑RT Alerts poll for a given `feed_source_id`:
-  1. Delete all existing alerts for that feed_source:
-     ```sql
-     DELETE FROM service_alerts WHERE feed_source_id = :feed_source_id;
-     ```
-  2. Insert one row per current alert with mapped route/stop/trip if possible.
-
-Alternate strategy: if the feed provides stable `alert_id`, you can `INSERT OR REPLACE` keyed by `(feed_source_id, alert_id)` via a UNIQUE constraint.
+> **Dropped in migration 0014.** The delete-all-then-reinsert polling
+> strategy designed here made the table the dominant source of D1 row
+> writes (every poll re-inserted every alert, and an hourly cleanup
+> deleted up to 5000 rows per run) while nothing in the application read
+> it. Migrations 0010 (sentinel `end_time` for open-ended alerts) and
+> 0013 (end_time index) only ever served this table. If alerts return,
+> design them with a guarded UPSERT keyed on a stable alert id and an
+> actual reader first.
 
 ---
 
@@ -707,24 +697,26 @@ This is the exact **order** recommended when importing a new `feed_version`. Ano
 
 ### 5.2 Create `feed_version`
 
-2. Insert one row into `feed_version`:
+2. Insert one row into `feed_version` (inactive until the import finishes):
 
 ```sql
 INSERT INTO feed_version (feed_source_id, version_label, date_added, feed_start_date, feed_end_date, is_active)
-VALUES (:feed_source_id, :version_label, DATE('now'), :feed_start_date, :feed_end_date, 0);
+VALUES (:feed_source_id, :version_label, unixepoch(), :feed_start_date, :feed_end_date, 0);
 ```
 
-3. Get the new `feed_version_id` using `last_insert_rowid()`.
+3. Get the new `feed_version_id` using `RETURNING feed_version_id` (or `last_insert_rowid()`).
 
-4. Optionally set this new version as active:
+4. After **all** tables import successfully, swap activation atomically (one
+   batch):
 
 ```sql
 UPDATE feed_version
-SET is_active = 0
-WHERE feed_source_id = :feed_source_id;
+SET is_active = 0, deactivated_at = COALESCE(deactivated_at, unixepoch())
+WHERE feed_source_id = :feed_source_id
+  AND feed_version_id != :feed_version_id;
 
 UPDATE feed_version
-SET is_active = 1
+SET is_active = 1, deactivated_at = NULL
 WHERE feed_version_id = :feed_version_id;
 ```
 
@@ -781,8 +773,11 @@ Given:
 - `feed_source_id = :source`
 - Want the active `feed_version_id`
 - GTFS `stop_id = :stop_id`
-- Current time string `:now_time` in `HH:MM:SS` for schedule comparison
-- Current date `:today` in `YYYYMMDD`
+- `:now_time` = seconds after midnight in the agency's timezone (matches the
+  INTEGER `stop_times.departure_time`)
+- `:today` = unix seconds at **noon** in the agency's timezone (matches how
+  calendar dates are stored)
+- `:realtime_cutoff` = unix seconds, `now - REALTIME_STALENESS_SECONDS`
 
 **Step 1: Find active feed_version_id**
 
@@ -806,8 +801,8 @@ JOIN stop_times st   ON s.stop_pk = st.stop_pk
 JOIN trips t         ON st.trip_pk = t.trip_pk
 JOIN routes r        ON t.route_pk = r.route_pk
 LEFT JOIN trip_updates tu
-    ON tu.feed_source_id = :source
-   AND tu.trip_id = t.trip_id
+    ON tu.trip_pk = t.trip_pk
+   AND tu.updated_time >= :realtime_cutoff  -- stale rows are not live data
 WHERE s.feed_version_id = :feed_version_id
   AND s.stop_id = :stop_id
   AND st.departure_time > :now_time
@@ -855,8 +850,10 @@ LIMIT 5;
 
 **Notes for AI**
 
-- `:today` should be `YYYYMMDD`.
-- `:today_sqlite` can be `DATE('now')` or equivalent; adjust binding accordingly.
+- `:today` is unix seconds at agency-noon; `:today_sqlite` feeds the weekday
+  check (the app picks the weekday column in code instead — see
+  `buildDeparturesQuery` in `src/db-queries.ts`, which is the live version
+  of this query).
 - Add `tu.delay` (seconds) to `departure_time` on the client/UI side to get predicted departure.
 
 ---
@@ -897,32 +894,11 @@ WHERE s.feed_version_id = :feed_version_id
 
 ---
 
-### 6.3 Active vehicles on a route
+### 6.3 Active vehicles on a route — NOT AVAILABLE
 
-```sql
-SELECT
-    v.vehicle_id,
-    v.latitude,
-    v.longitude,
-    v.timestamp,
-    t.trip_headsign,
-    tu.delay
-FROM feed_version fv
-JOIN routes r
-    ON fv.feed_version_id = r.feed_version_id
-JOIN trips t
-    ON t.route_pk = r.route_pk
-   AND t.feed_version_id = fv.feed_version_id
-JOIN vehicle_positions v
-    ON v.trip_pk = t.trip_pk
-   AND v.feed_source_id = fv.feed_source_id
-LEFT JOIN trip_updates tu
-    ON tu.feed_source_id = v.feed_source_id
-   AND tu.trip_id        = t.trip_id
-WHERE fv.feed_source_id = :feed_source_id
-  AND fv.is_active = 1
-  AND r.route_short_name = :route_short_name;
-```
+`vehicle_positions` was dropped in migration 0014 (never populated, never
+read), so there is no vehicles-on-a-route query. Realtime coverage is
+trip-level delay/status via `trip_updates` only.
 
 ---
 
@@ -930,56 +906,50 @@ WHERE fv.feed_source_id = :feed_source_id
 
 ### 7.1 Realtime data retention
 
-Example cleanup jobs:
+`trip_updates` is keyed on `(feed_source_id, trip_id)` and upserted in
+place, so it stays at one row per known trip. The daily import workflow
+additionally purges rows whose `updated_time` is older than 24h
+(`TRIP_UPDATES_RETENTION_SECONDS`), and the read path ignores anything older
+than 15 minutes (`REALTIME_STALENESS_SECONDS`) regardless.
 
-```sql
--- Remove vehicle positions older than 2 hours
-DELETE FROM vehicle_positions
-WHERE timestamp < DATETIME('now', '-2 hours');
-```
+### 7.2 Deleting old feed versions (implemented)
 
-`trip_updates` is keyed on `(feed_source_id, trip_id)` and upserted in place,
-so it does not need a periodic cleanup job.
+`Import511Workflow` runs this after every daily import (see
+`src/cleanup-queries.ts`):
 
-### 7.2 Deleting old feed versions (optional)
+1. Select condemned versions for the source:
+   `is_active = 0 AND COALESCE(deactivated_at, date_added) < unixepoch() - VERSION_RETENTION_SECONDS`
+   (7 days by default).
+2. For each, execute the FK-safe ordered statement list from
+   `buildVersionCleanupStatements()`:
+   - detach realtime rows (`UPDATE trip_updates SET trip_pk = NULL ...`),
+   - delete `stop_times`, `trips`, `stops`, `shapes` in **batches of 5000
+     via primary-key subqueries** (these tables hold millions of rows and a
+     single unbounded `DELETE` would exceed D1's per-query limits — the same
+     constraint documented in migration 0014),
+   - null `stops.parent_station` before deleting stops (self-FK),
+   - delete the remaining feed_version-scoped tables, then `routes`,
+     `agency`, and finally the `feed_version` row.
+3. Work is bounded per workflow step (~40 batches) and continues across
+   steps until done, so arbitrarily large versions drain durably across
+   daily runs.
 
-To fully drop a deprecated feed_version:
-
-1. Ensure it is not active.
-2. Delete child rows in the correct dependency order.
-3. Finally delete `feed_version`.
-
-Example (simplified):
-
-```sql
-DELETE FROM attributions     WHERE feed_version_id = :fv;
-DELETE FROM pathways         WHERE feed_version_id = :fv;
-DELETE FROM transfers        WHERE feed_version_id = :fv;
-DELETE FROM fare_rules       WHERE feed_version_id = :fv;
-DELETE FROM fare_attributes  WHERE feed_version_id = :fv;
-DELETE FROM shapes           WHERE feed_version_id = :fv;
-DELETE FROM stop_times       WHERE trip_pk IN (
-    SELECT trip_pk FROM trips WHERE feed_version_id = :fv
-);
-DELETE FROM trips            WHERE feed_version_id = :fv;
-DELETE FROM calendar_dates   WHERE feed_version_id = :fv;
-DELETE FROM calendar         WHERE feed_version_id = :fv;
-DELETE FROM routes           WHERE feed_version_id = :fv;
-DELETE FROM stops            WHERE feed_version_id = :fv;
-DELETE FROM levels           WHERE feed_version_id = :fv;
-DELETE FROM agency           WHERE feed_version_id = :fv;
-DELETE FROM feed_info        WHERE feed_version_id = :fv;
-DELETE FROM feed_version     WHERE feed_version_id = :fv;
-```
-
-_(If you enable `ON DELETE CASCADE` on all relevant foreign keys, many of these explicit deletes can be replaced by a single `DELETE FROM feed_version`.)_
+D1 enforces foreign keys, so the ordering above is load-bearing; it is
+regression-tested in `test/cleanup-queries.test.ts`.
 
 ---
 
 ## 8. Summary
 
-- This schema is **GTFS‑complete** (static + realtime) and **multi‑agency**.
-- Static data is versioned via `feed_version`.
-- Realtime data is keyed by `feed_source` and upserted using `INSERT OR REPLACE`.
+- This schema is **GTFS‑complete** and **multi‑agency**; realtime coverage
+  is trip-level delay/status via `trip_updates`.
+- Static data is versioned via `feed_version`; new versions activate
+  atomically only after a fully successful import, and inactive versions
+  are deleted after a retention window.
+- Realtime data is keyed by `feed_source` and written with a guarded UPSERT;
+  readers filter by `updated_time` freshness.
 - Spatial queries are supported via lat/lon columns and optionally R\*Tree virtual tables.
-- The import and query recipes in this document are written to be straightforward for another AI or automated system to follow step‑by‑step.
+- The import and query recipes in this document are written to be
+  straightforward for another AI or automated system to follow
+  step‑by‑step; where this design and `migrations/` disagree, the
+  migrations win (see "Schema evolution" at the top).

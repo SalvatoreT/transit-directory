@@ -5,6 +5,12 @@ import {
 } from "cloudflare:workers";
 import JSZip from "jszip";
 import { DateTime } from "luxon";
+import {
+  CLEANUP_BATCH_SIZE,
+  buildCondemnedVersionsQuery,
+  buildTripUpdatesPurgeQuery,
+  buildVersionCleanupStatements,
+} from "./cleanup-queries";
 
 interface Env {
   gtfs_data: D1Database;
@@ -205,6 +211,47 @@ async function batchExecute(
   return results;
 }
 
+// Bounds how much delete work a single cleanup step performs; a version
+// with more rows than this continues in a fresh workflow step.
+const MAX_BATCHES_PER_CLEANUP_STEP = 40;
+
+/**
+ * Runs the FK-ordered cleanup statements for one feed version, stopping
+ * after a bounded number of batches. Returns done=false when more work
+ * remains; statements are idempotent, so resuming simply re-runs the list
+ * (already-empty tables no-op).
+ */
+async function runCleanupPass(
+  db: D1Database,
+  feedVersionId: number,
+): Promise<{ done: boolean; rowsDeleted: number }> {
+  let batchBudget = MAX_BATCHES_PER_CLEANUP_STEP;
+  let rowsDeleted = 0;
+
+  for (const statement of buildVersionCleanupStatements()) {
+    if (statement.batched) {
+      while (true) {
+        if (batchBudget === 0) return { done: false, rowsDeleted };
+        const result = await db
+          .prepare(statement.sql)
+          .bind(feedVersionId, CLEANUP_BATCH_SIZE)
+          .run();
+        batchBudget--;
+        const changes = result.meta.changes ?? 0;
+        rowsDeleted += changes;
+        if (changes < CLEANUP_BATCH_SIZE) break;
+      }
+    } else {
+      if (batchBudget === 0) return { done: false, rowsDeleted };
+      const result = await db.prepare(statement.sql).bind(feedVersionId).run();
+      batchBudget--;
+      rowsDeleted += result.meta.changes ?? 0;
+    }
+  }
+
+  return { done: true, rowsDeleted };
+}
+
 export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
   async run(event: Readonly<WorkflowEvent<Params>>, step: WorkflowStep) {
     console.log("Import511Workflow run started", event.payload);
@@ -212,8 +259,12 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
     const instanceId = event.instanceId;
     const prefix = `imports/${instanceId}`;
 
-    const { hashHex } = await step.do(
-      `[Import511] Download and unzip ${operatorId} to R2`,
+    const { hashHex, activeMatch } = await step.do(
+      `[Import511] Download and stage ${operatorId}`,
+      {
+        retries: { limit: 5, delay: "30 seconds", backoff: "exponential" },
+        timeout: "10 minutes",
+      },
       async () => {
         console.log("Starting fetch for", operatorId);
         const response = await fetch(
@@ -235,6 +286,36 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           .map((b) => b.toString(16).padStart(2, "0"))
           .join("");
 
+        // If this exact content is already imported and live, skip the
+        // unzip and R2 staging entirely; the run reduces to retention
+        // cleanup. A hash match on an INACTIVE version means a previous
+        // import crashed partway (or old content came back), so fall
+        // through and re-import it in full.
+        const existing = await this.env.gtfs_data
+          .prepare(
+            `SELECT fv.feed_version_id, fv.feed_source_id, fv.is_active
+             FROM feed_version fv
+             JOIN feed_source fs ON fv.feed_source_id = fs.feed_source_id
+             WHERE fs.source_name = ? AND fv.version_label = ?`,
+          )
+          .bind(operatorId, `511-${operatorId}-${hashHex}`)
+          .first<{
+            feed_version_id: number;
+            feed_source_id: number;
+            is_active: number;
+          }>();
+
+        if (existing && existing.is_active === 1) {
+          console.log("Feed unchanged, skipping unzip. hash:", hashHex);
+          return {
+            hashHex,
+            activeMatch: {
+              feedVersionId: existing.feed_version_id,
+              feedSourceId: existing.feed_source_id,
+            },
+          };
+        }
+
         const zip = await JSZip.loadAsync(arrayBuffer);
 
         for (const [name, file] of Object.entries(zip.files)) {
@@ -249,9 +330,18 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           }
         }
         console.log("Finished unzip, hash:", hashHex);
-        return { hashHex };
+        return { hashHex, activeMatch: null };
       },
     );
+
+    if (activeMatch) {
+      await this.runRetentionCleanup(
+        step,
+        operatorId,
+        activeMatch.feedSourceId,
+      );
+      return;
+    }
 
     const getFileRows = async (key: FileKey): Promise<CsvRow[]> => {
       const fileName = GTFS_FILE_NAMES[key].toLowerCase();
@@ -263,235 +353,232 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       return parseCsv(content);
     };
 
-    const { feedVersionId, feedInfo, isNewVersion, agencyTimezone } =
-      await step.do(
-        `[Import511] Initialize feed version for ${operatorId}`,
-        async () => {
-          console.log("Initializing feed version...");
-          const agencyRows = await getFileRows("agency");
-          const feedInfoRows = await getFileRows("feed_info");
-          const feedInfo = feedInfoRows[0] || null;
+    const {
+      feedVersionId,
+      feedSourceId,
+      feedInfo,
+      isNewVersion,
+      agencyTimezone,
+    } = await step.do(
+      `[Import511] Initialize feed version for ${operatorId}`,
+      async () => {
+        console.log("Initializing feed version...");
+        const agencyRows = await getFileRows("agency");
+        const feedInfoRows = await getFileRows("feed_info");
+        const feedInfo = feedInfoRows[0] || null;
 
-          const sourceName = operatorId;
-          const sourceDesc = agencyRows[0]?.agency_name ?? sourceName;
-          const defaultLang =
-            feedInfo?.feed_lang ?? agencyRows[0]?.agency_lang ?? null;
+        const sourceName = operatorId;
+        const sourceDesc = agencyRows[0]?.agency_name ?? sourceName;
+        const defaultLang =
+          feedInfo?.feed_lang ?? agencyRows[0]?.agency_lang ?? null;
 
-          const agencyTimezone = agencyRows[0]?.agency_timezone;
-          if (!agencyTimezone) {
-            throw new Error(`Agency timezone is missing for ${operatorId}`);
-          }
+        const agencyTimezone = agencyRows[0]?.agency_timezone;
+        if (!agencyTimezone) {
+          throw new Error(`Agency timezone is missing for ${operatorId}`);
+        }
 
-          // Ensure feed source
-          await this.env.gtfs_data
-            .prepare(
-              `
+        // Ensure feed source
+        await this.env.gtfs_data
+          .prepare(
+            `
             INSERT INTO feed_source (source_name, source_desc, default_lang)
             VALUES (?, ?, ?)
             ON CONFLICT(source_name) DO UPDATE SET
               source_desc = excluded.source_desc,
               default_lang = excluded.default_lang
           `,
-            )
-            .bind(sourceName, sourceDesc, defaultLang)
-            .run();
+          )
+          .bind(sourceName, sourceDesc, defaultLang)
+          .run();
 
-          const sourceRow = await this.env.gtfs_data
-            .prepare(
-              "SELECT feed_source_id FROM feed_source WHERE source_name = ?",
-            )
-            .bind(sourceName)
-            .first<{ feed_source_id: number }>();
+        const sourceRow = await this.env.gtfs_data
+          .prepare(
+            "SELECT feed_source_id FROM feed_source WHERE source_name = ?",
+          )
+          .bind(sourceName)
+          .first<{ feed_source_id: number }>();
 
-          if (!sourceRow) throw new Error("Failed to obtain feed_source_id");
-          const feedSourceId = sourceRow.feed_source_id;
+        if (!sourceRow) throw new Error("Failed to obtain feed_source_id");
+        const feedSourceId = sourceRow.feed_source_id;
 
-          // Try to insert the feed version based on content hash
-          const versionLabel = `511-${operatorId}-${hashHex}`;
-          const feedStartDate = parseGtfsDate(
-            feedInfo?.feed_start_date,
-            agencyTimezone,
-          );
-          const feedEndDate = parseGtfsDate(
-            feedInfo?.feed_end_date,
-            agencyTimezone,
-          );
+        // Try to insert the feed version based on content hash
+        const versionLabel = `511-${operatorId}-${hashHex}`;
+        const feedStartDate = parseGtfsDate(
+          feedInfo?.feed_start_date,
+          agencyTimezone,
+        );
+        const feedEndDate = parseGtfsDate(
+          feedInfo?.feed_end_date,
+          agencyTimezone,
+        );
 
-          const res = await this.env.gtfs_data
-            .prepare(
-              `
+        const res = await this.env.gtfs_data
+          .prepare(
+            `
             INSERT INTO feed_version (
               feed_source_id, version_label, date_added, feed_start_date, feed_end_date, is_active
-            ) VALUES (?, ?, unixepoch(), ?, ?, 1)
+            ) VALUES (?, ?, unixepoch(), ?, ?, 0)
             ON CONFLICT(feed_source_id, version_label) DO NOTHING
             RETURNING feed_version_id
           `,
-            )
-            .bind(feedSourceId, versionLabel, feedStartDate, feedEndDate)
-            .run();
+          )
+          .bind(feedSourceId, versionLabel, feedStartDate, feedEndDate)
+          .run();
 
-          let feedVersionId = res.results?.[0]?.feed_version_id as
-            | number
-            | undefined;
-          let isNewVersion = false;
+        let feedVersionId = res.results?.[0]?.feed_version_id as
+          | number
+          | undefined;
+        let isNewVersion = false;
 
-          if (feedVersionId) {
-            isNewVersion = true;
-          } else {
-            // Version already exists! Get ID
-            const existing = await this.env.gtfs_data
-              .prepare(
-                "SELECT feed_version_id FROM feed_version WHERE feed_source_id = ? AND version_label = ?",
-              )
-              .bind(feedSourceId, versionLabel)
-              .first<{ feed_version_id: number }>();
-
-            if (!existing)
-              throw new Error("Failed to find existing feed_version_id");
-            feedVersionId = existing.feed_version_id;
-
-            // Ensure it is active
-            await this.env.gtfs_data
-              .prepare(
-                "UPDATE feed_version SET is_active = 1 WHERE feed_version_id = ?",
-              )
-              .bind(feedVersionId)
-              .run();
-          }
-
-          if (isNewVersion) {
-            await this.env.gtfs_data.batch([
-              // Clear realtime references first to avoid FK violations
-              this.env.gtfs_data
-                .prepare(
-                  "UPDATE trip_updates SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-                )
-                .bind(feedVersionId),
-
-              // Delete static data
-              this.env.gtfs_data
-                .prepare(
-                  "DELETE FROM stop_times WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "DELETE FROM frequencies WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM attributions WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM trips WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM transfers WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM pathways WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM stops WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "DELETE FROM fare_attributes WHERE feed_version_id = ?",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM fare_rules WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM routes WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM agency WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM feed_info WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM calendar WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM calendar_dates WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM shapes WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM levels WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM areas WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM stop_areas WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM networks WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM route_networks WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM timeframes WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "DELETE FROM rider_categories WHERE feed_version_id = ?",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM fare_media WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM fare_products WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM fare_leg_rules WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "DELETE FROM fare_leg_join_rules WHERE feed_version_id = ?",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "DELETE FROM fare_transfer_rules WHERE feed_version_id = ?",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "DELETE FROM location_groups WHERE feed_version_id = ?",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare(
-                  "DELETE FROM location_group_stops WHERE feed_version_id = ?",
-                )
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM booking_rules WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-              this.env.gtfs_data
-                .prepare("DELETE FROM translations WHERE feed_version_id = ?")
-                .bind(feedVersionId),
-            ]);
-          }
-
-          // De-activate other versions for this source
-          await this.env.gtfs_data
+        if (feedVersionId) {
+          isNewVersion = true;
+        } else {
+          // The version row exists but is not active (the active case
+          // short-circuits before unzip), meaning a previous import of
+          // this content crashed partway. Re-import in full into the
+          // same version id; the delete batch below clears partial rows.
+          const existing = await this.env.gtfs_data
             .prepare(
-              "UPDATE feed_version SET is_active = 0 WHERE feed_source_id = ? AND feed_version_id != ?",
+              "SELECT feed_version_id FROM feed_version WHERE feed_source_id = ? AND version_label = ?",
             )
-            .bind(feedSourceId, feedVersionId)
-            .run();
+            .bind(feedSourceId, versionLabel)
+            .first<{ feed_version_id: number }>();
 
-          return { feedVersionId, feedInfo, isNewVersion, agencyTimezone };
-        },
-      );
+          if (!existing)
+            throw new Error("Failed to find existing feed_version_id");
+          feedVersionId = existing.feed_version_id;
+          isNewVersion = true;
+        }
+
+        if (isNewVersion) {
+          await this.env.gtfs_data.batch([
+            // Clear realtime references first to avoid FK violations
+            this.env.gtfs_data
+              .prepare(
+                "UPDATE trip_updates SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+
+            // Delete static data
+            this.env.gtfs_data
+              .prepare(
+                "DELETE FROM stop_times WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare(
+                "DELETE FROM frequencies WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM attributions WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM trips WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM transfers WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM pathways WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM stops WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM fare_attributes WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM fare_rules WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM routes WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM agency WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM feed_info WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM calendar WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM calendar_dates WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM shapes WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM levels WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM areas WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM stop_areas WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM networks WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM route_networks WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM timeframes WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM rider_categories WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM fare_media WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM fare_products WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM fare_leg_rules WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare(
+                "DELETE FROM fare_leg_join_rules WHERE feed_version_id = ?",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare(
+                "DELETE FROM fare_transfer_rules WHERE feed_version_id = ?",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM location_groups WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare(
+                "DELETE FROM location_group_stops WHERE feed_version_id = ?",
+              )
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM booking_rules WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+            this.env.gtfs_data
+              .prepare("DELETE FROM translations WHERE feed_version_id = ?")
+              .bind(feedVersionId),
+          ]);
+        }
+
+        // The version stays inactive until every import step has
+        // succeeded; the activation step at the end swaps it in
+        // atomically. Pages keep serving the previous version until
+        // then, and a crashed import can never become the live version.
+        return {
+          feedVersionId,
+          feedSourceId,
+          feedInfo,
+          isNewVersion,
+          agencyTimezone,
+        };
+      },
+    );
 
     if (isNewVersion && feedInfo) {
       await step.do(
@@ -1970,6 +2057,29 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       );
     }
 
+    await step.do(
+      `[Import511] Activate feed version for ${operatorId}`,
+      async () => {
+        // Atomic swap: everything imported successfully, so this version
+        // becomes the one pages serve. COALESCE preserves the retention
+        // clock of versions that were already deactivated earlier.
+        await this.env.gtfs_data.batch([
+          this.env.gtfs_data
+            .prepare(
+              "UPDATE feed_version SET is_active = 0, deactivated_at = COALESCE(deactivated_at, unixepoch()) WHERE feed_source_id = ? AND feed_version_id != ?",
+            )
+            .bind(feedSourceId, feedVersionId),
+          this.env.gtfs_data
+            .prepare(
+              "UPDATE feed_version SET is_active = 1, deactivated_at = NULL WHERE feed_version_id = ?",
+            )
+            .bind(feedVersionId),
+        ]);
+      },
+    );
+
+    await this.runRetentionCleanup(step, operatorId, feedSourceId);
+
     await step.do(`[Import511] Cleanup R2 for ${operatorId}`, async () => {
       const listed = await this.env.gtfs_processing.list({
         prefix: `${prefix}/`,
@@ -1978,6 +2088,47 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
       if (keys.length) {
         await this.env.gtfs_processing.delete(keys);
       }
+    });
+  }
+
+  // Deletes data for versions that have been inactive longer than the
+  // retention window, plus realtime rows past their shelf life. Each pass is
+  // its own workflow step so multi-million-row versions drain durably across
+  // bounded D1 work.
+  private async runRetentionCleanup(
+    step: WorkflowStep,
+    operatorId: string,
+    feedSourceId: number,
+  ) {
+    const condemned = await step.do(
+      `[Import511] Find expired versions for ${operatorId}`,
+      async () => {
+        const rows = await this.env.gtfs_data
+          .prepare(buildCondemnedVersionsQuery())
+          .bind(feedSourceId)
+          .all<{ feed_version_id: number }>();
+        return (rows.results || []).map((r) => r.feed_version_id);
+      },
+    );
+
+    for (const feedVersionId of condemned) {
+      let pass = 0;
+      let done = false;
+      while (!done) {
+        pass++;
+        const result = await step.do(
+          `[Import511] Cleanup version ${feedVersionId} pass ${pass}`,
+          async () => runCleanupPass(this.env.gtfs_data, feedVersionId),
+        );
+        done = result.done;
+        console.log(
+          `[Import511] Cleanup version ${feedVersionId} pass ${pass}: deleted ${result.rowsDeleted} rows (done=${result.done})`,
+        );
+      }
+    }
+
+    await step.do(`[Import511] Purge stale trip_updates`, async () => {
+      await this.env.gtfs_data.prepare(buildTripUpdatesPurgeQuery()).run();
     });
   }
 }

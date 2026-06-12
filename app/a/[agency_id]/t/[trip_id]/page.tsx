@@ -3,7 +3,7 @@ import { DateTime } from "luxon";
 import {
   getAgency,
   getTrip,
-  getRoutes,
+  getRouteByPk,
   getTripStops,
 } from "../../../../../src/db";
 import DepartureTime from "../../../../../src/components/DepartureTime";
@@ -22,11 +22,7 @@ export async function generateMetadata({
   if (!agency) return { title: "Not Found" };
   const trip = await getTrip(trip_id, agency.feed_version_id);
   if (!trip) return { title: "Trip Not Found" };
-  const routes = await getRoutes({
-    feed_version_id: agency.feed_version_id,
-    route_pk: trip.route_pk,
-  });
-  const route = routes[0];
+  const route = await getRouteByPk(trip.route_pk);
   const tripName = trip.trip_headsign || trip.trip_short_name || trip.trip_id;
   const routeName = route?.route_short_name || "";
   return {
@@ -53,21 +49,17 @@ export default async function TripPage({
   const trip = await getTrip(trip_id, feed_version_id);
   if (!trip) notFound();
 
-  const routes = await getRoutes({
-    feed_version_id,
-    route_pk: trip.route_pk,
-  });
-  const route = routes[0];
+  const route = await getRouteByPk(trip.route_pk);
   const routeColor = route?.route_color ? `#${route.route_color}` : "#eee";
   const routeTextColor = route?.route_text_color
     ? `#${route.route_text_color}`
     : "#000";
 
-  const stops = await getTripStops(trip.trip_pk);
-
   const now = DateTime.now().setZone(agency_timezone);
   const midnight = now.startOf("day");
   const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
+
+  const stops = await getTripStops(trip.trip_pk, Math.floor(now.toSeconds()));
 
   const selectedStop =
     selectedStopSequence !== null

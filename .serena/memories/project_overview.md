@@ -1,17 +1,17 @@
-# Transit Directory (status Mar 2026)
+# Transit Directory (status Jun 2026)
 
-- Astro 5 + TypeScript, Cloudflare adapter/worker entry `src/worker.ts`; Yarn 4.
+- Next.js App Router (react 19) served by **vinext** (Next-on-Vite) on Cloudflare Workers; TypeScript strict; Yarn 4.
 - Site: https://transit.directory
-- D1 schema managed via **migrations** in the `migrations/` folder. Docs in `docs/gtfs-database.md`; `docs/gtfs-reference.md` is GTFS upstream, do not edit.
-- Core logic for parsing GTFS CSVs and loading into D1 is contained within `src/Import511Workflow.ts`.
-- Real-time GTFS data (trip updates, service alerts) imported via `src/Import511RealtimeWorkflow.ts` (binding `IMPORT_REALTIME_WORKFLOW`).
-- Workflow `Import511Workflow` in `src/Import511Workflow.ts` (binding `IMPORT_511_WORKFLOW`) fetches GTFS from 511.org, stores files temporarily in R2, and imports them into D1.
-- **Idempotency**: The import workflow calculates a SHA-256 hash of the GTFS zip. If a `feed_version` with that hash already exists, the workflow skips processing and exits early to avoid duplication.
-- **Upserts**: D1 imports use `INSERT INTO ... ON CONFLICT (...) DO UPDATE SET ... RETURNING ...` to ensure stability and maintain foreign key integrity.
-- Wrangler bindings: D1 `gtfs_data` (database `gtfs-data`), KV `SESSION`, Workflows `IMPORT_511_WORKFLOW` and `IMPORT_REALTIME_WORKFLOW`, R2 `gtfs_processing`.
-- Secret `API_KEY_511` is required for fetching data from 511.org.
-- **Live Collections**: `src/live.config.ts` defines runtime D1-backed collections (agencies, stops, routes, departures, trips, route_stops, trip_stops) using Astro's experimental `liveContentCollections`.
-- **Pages**: `src/pages/index.astro` (agency listing), `src/pages/a/[agency_id].astro` (agency detail with routes/stops toggle), nested routes for `/r/[route_id]`, `/s/[stop_id]`, `/t/[trip_id]`.
-- **Components**: `AgencyRoutesView.astro`, `AgencyStopsView.astro`, `DepartureTime.astro`, `StopHero.astro` in `src/components/`.
-- **Layout**: `src/layouts/Layout.astro` (HTML shell with OG meta, responsive CSS).
-- Key commands: `yarn wrangler d1 migrations apply gtfs_data --local` to apply schema; `yarn dev` then `curl http://127.0.0.1:8788/workflow?id=CT` (example for Caltrain); cron: `curl http://127.0.0.1:8788/cdn-cgi/handler/scheduled`.
+- D1 schema managed via **migrations** in the `migrations/` folder. Docs in `docs/gtfs-database.md` (see its "Schema evolution" section for design-vs-live deltas); `docs/gtfs-reference.md` and `docs/gtfs-realtime-reference.md` are GTFS upstream, do not edit.
+- Worker entry `worker/index.ts`: wraps vinext's app-router handler with an edge-cache middleware (`worker/cache.ts`: 60s for HTML pages, 1h sitemap/robots, `/api/*` never cached), plus the `scheduled` cron handler and workflow exports.
+- **Static import**: `Import511Workflow` (`src/Import511Workflow.ts`, binding `IMPORT_511_WORKFLOW`, daily 08:00 UTC cron per feed source) fetches the GTFS zip from 511.org, hashes it (SHA-256), and:
+  - hash matches the active version: skips unzip/R2/import entirely;
+  - hash matches an inactive version (crashed import): full re-import into that version id;
+  - new content: unzips to R2, imports all tables with the version **inactive**, then atomically activates it in a final step.
+  - After every run it deletes versions inactive past `VERSION_RETENTION_SECONDS` (7d) in FK-safe batched passes (`src/cleanup-queries.ts`) and purges `trip_updates` older than 24h.
+- **Realtime import**: `Import511RealtimeWorkflow` (`src/Import511RealtimeWorkflow.ts`, binding `IMPORT_REALTIME_WORKFLOW`, hourly cron, agency `RG`) polls 511 trip updates, pacing fetches with the API's RateLimit headers (`computePacing` in `src/realtime-utils.ts`, 15s floor) so coverage spans the whole hour; trip_id->trip_pk lookups are cached across iterations and reset when a new feed version activates. Guarded UPSERT writes only on change.
+- **Read path**: `src/db.ts` (D1 access; single-row getters wrapped in React `cache()` for request-level dedup) + `src/db-queries.ts` (pure SQL builders; realtime joins filter `updated_time >= now - REALTIME_STALENESS_SECONDS` (15 min) so stale delays never render as live).
+- **Pages**: `app/page.tsx` (agencies), `app/a/[agency_id]/page.tsx`, nested `/r/[route_id]`, `/s/[stop_id]`, `/t/[trip_id]`; `app/sitemap.ts`, `app/robots.ts`. Components in `src/components/` (`DepartureTime.tsx`, `StopHero.tsx`), CSS Modules.
+- **TRMNL plugin**: e-ink display endpoints under `app/api/trmnl/*`, logic in `src/lib/trmnl/` (`data.ts` fetch/format, `render.ts` markup). KV `TRMNL_USERS` stores device config.
+- Wrangler bindings: D1 `gtfs_data` (database `gtfs-data`), KV `SESSION` + `TRMNL_USERS`, Workflows `IMPORT_511_WORKFLOW` + `IMPORT_REALTIME_WORKFLOW`, R2 `gtfs_processing`. Secret `API_KEY_511`.
+- Tests: vitest in `test/` (pure-function suites for pacing, realtime state extraction, query builders, cleanup ordering, cache policy, TRMNL render).
