@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  TRIP_UPDATES_RETENTION_SECONDS,
   VERSION_RETENTION_SECONDS,
   buildCondemnedVersionsQuery,
-  buildTripUpdatesPurgeQuery,
   buildVersionCleanupStatements,
 } from "../src/cleanup-queries";
 
@@ -14,9 +12,8 @@ describe("buildVersionCleanupStatements", () => {
       (s) => s.table === table && s.sql.startsWith(sqlPrefix),
     );
 
-  it("detaches realtime references before anything else", () => {
-    expect(statements[0].table).toBe("trip_updates");
-    expect(statements[0].sql).toContain("SET trip_pk = NULL");
+  it("deletes the largest referencing rows first", () => {
+    expect(statements[0].table).toBe("stop_times");
   });
 
   it("deletes referencing rows before the rows they point at", () => {
@@ -68,11 +65,5 @@ describe("retention queries", () => {
     // Versions that never got a deactivation stamp (crashed imports) age
     // out via date_added instead of lingering forever.
     expect(sql).toContain("COALESCE(deactivated_at, date_added)");
-  });
-
-  it("purges trip_updates past their shelf life", () => {
-    const sql = buildTripUpdatesPurgeQuery();
-    expect(sql).toContain("DELETE FROM trip_updates");
-    expect(sql).toContain(`${TRIP_UPDATES_RETENTION_SECONDS}`);
   });
 });

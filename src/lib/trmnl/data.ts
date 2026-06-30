@@ -125,7 +125,6 @@ export async function getTrmnlData(
     endSeconds: endOfDaySeconds,
     todayNoon,
     todayColumn,
-    nowEpochSeconds: Math.floor(now.toSeconds()),
   });
 
   return {

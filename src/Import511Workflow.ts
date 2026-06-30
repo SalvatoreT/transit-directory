@@ -8,7 +8,6 @@ import { DateTime } from "luxon";
 import {
   CLEANUP_BATCH_SIZE,
   buildCondemnedVersionsQuery,
-  buildTripUpdatesPurgeQuery,
   buildVersionCleanupStatements,
 } from "./cleanup-queries";
 
@@ -452,13 +451,6 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
 
         if (isNewVersion) {
           await this.env.gtfs_data.batch([
-            // Clear realtime references first to avoid FK violations
-            this.env.gtfs_data
-              .prepare(
-                "UPDATE trip_updates SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?)",
-              )
-              .bind(feedVersionId),
-
             // Delete static data
             this.env.gtfs_data
               .prepare(
@@ -2126,9 +2118,5 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
         );
       }
     }
-
-    await step.do(`[Import511] Purge stale trip_updates`, async () => {
-      await this.env.gtfs_data.prepare(buildTripUpdatesPurgeQuery()).run();
-    });
   }
 }

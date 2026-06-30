@@ -59,7 +59,7 @@ export default async function TripPage({
   const midnight = now.startOf("day");
   const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
 
-  const stops = await getTripStops(trip.trip_pk, Math.floor(now.toSeconds()));
+  const stops = await getTripStops(trip.trip_pk, trip.trip_id);
 
   const selectedStop =
     selectedStopSequence !== null

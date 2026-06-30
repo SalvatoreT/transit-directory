@@ -4,13 +4,15 @@ Bay Area transit departures at [transit.directory](https://transit.directory).
 
 A Next.js App Router app served by vinext on Cloudflare Workers:
 
-- **D1** (binding `gtfs_data`) stores GTFS static and realtime data; schema is
-  managed via `migrations/`.
+- **D1** (binding `gtfs_data`) stores GTFS static data; schema is managed via
+  `migrations/`.
 - **R2** (binding `gtfs_processing`) stages unzipped GTFS files during imports.
-- **Workflows** import data from 511.org: `Import511Workflow` runs daily
-  (08:00 UTC cron) per feed source and skips all work when the feed zip is
-  unchanged; `Import511RealtimeWorkflow` runs hourly and polls trip updates,
-  pacing itself against the 511.org rate limit.
+- **Workflow**: `Import511Workflow` runs daily (08:00 UTC cron) per feed source,
+  importing the static GTFS zip from 511.org and skipping all work when the zip
+  is unchanged.
+- **Realtime**: GTFS-RT TripUpdates (agency `RG`) are fetched on page load and
+  merged into departures; the raw payload is cached in the Cloudflare Cache API
+  (`src/realtime-feed.ts`) so 511.org is polled at most once per ~15s.
 - **Edge cache**: HTML pages and the sitemap are cached briefly at the edge
   (`worker/cache.ts`); `/api/*` is never cached.
 - **TRMNL plugin** endpoints live under `/api/trmnl/*` (see

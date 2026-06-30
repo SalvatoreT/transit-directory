@@ -21,8 +21,8 @@ Key deltas, by migration:
   seconds, parsed at noon in the agency's timezone to dodge DST edges.
   Times of day (`stop_times.arrival_time`/`departure_time`,
   `frequencies.start_time`/`end_time`) are seconds after midnight and may
-  exceed 86400 for post-midnight service. `trip_updates.updated_time` and
-  `feed_version.date_added` are Unix epoch seconds.
+  exceed 86400 for post-midnight service. `feed_version.date_added` is Unix
+  epoch seconds.
 - **GTFS v2 / Flex additions** (0004): new tables `areas`, `stop_areas`,
   `networks`, `route_networks`, `timeframes`, `rider_categories`,
   `fare_media`, `fare_products`, `fare_leg_rules`, `fare_leg_join_rules`,
@@ -33,19 +33,25 @@ Key deltas, by migration:
   columns (`location_group_id`, `continuous_pickup`/`continuous_drop_off`,
   `start/end_pickup_drop_off_window`, booking rule ids, etc.).
 - **Index changes** (0005, 0007, 0008, 0009, 0012): the live lookup
-  indexes are `idx_trip_updates_trip_pk`, `idx_calendar_dates_lookup`,
-  `idx_trips_trip_id`, `idx_routes_route_id`, `idx_stops_stop_id`,
+  indexes are `idx_calendar_dates_lookup`, `idx_trips_trip_id`,
+  `idx_routes_route_id`, `idx_stops_stop_id`,
   `idx_stops_parent_station (feed_version_id, parent_station)`,
   `idx_stop_times_departure (stop_pk, departure_time)`, and
   `idx_stop_times_trip_departure`. The originally recommended
   `idx_stop_times_trip`, `idx_stop_times_stop`, and `idx_shapes_id_seq`
   were dropped in 0012 as duplicates of UNIQUE constraints or dead weight
   (each redundant index taxes every import write).
-- **`trip_updates` is a state table** (0002/0003 made it historical; 0011
-  collapsed it back): one row per `(feed_source_id, trip_id)`, written with
-  a guarded UPSERT that skips no-op writes. Readers must filter
-  `updated_time` for freshness (see `REALTIME_STALENESS_SECONDS` in
-  `src/db-queries.ts`); rows older than 24h are purged daily.
+- **Realtime is no longer stored in D1** (0016 dropped `trip_updates`).
+  GTFS-RT TripUpdates (agency `RG`) are fetched on page load by
+  `getRealtimeTripUpdates` (`src/realtime-feed.ts`), which caches the raw
+  protobuf payload in the Cloudflare Cache API (`s-maxage=15`) so 511 is
+  polled at most once per ~15s, then merges trip-level delay/status into
+  query results in JS (`buildRealtimeMap`/`mergeDeparturesRealtime`/
+  `mergeTripStopsRealtime` in `src/db-queries.ts`). Sections 4.x below are
+  retained for historical context only.
+- **`trip_updates` was a state table** (0002/0003 made it historical; 0011
+  collapsed it back to one row per `(feed_source_id, trip_id)`) until it was
+  dropped in 0016 when realtime moved to the on-page-load fetch above.
 - **`vehicle_positions` and `service_alerts` were dropped** (0014). The
   realtime workflow never wrote vehicle positions, and service alerts had
   no reader while dominating D1 row writes. Sections 4.1/4.3 below are
@@ -613,7 +619,16 @@ Realtime tables are **logically separate** but tied to `feed_source` and static 
 
 ---
 
-### 4.2 `trip_updates` (GTFS‑Realtime TripUpdate)
+### 4.2 `trip_updates` (GTFS‑Realtime TripUpdate) — DROPPED
+
+> **Dropped in migration 0016.** Realtime delays are no longer persisted in
+> D1. The background polling workflow that maintained this table was removed;
+> GTFS-RT TripUpdates (agency `RG`) are now fetched on page load by
+> `getRealtimeTripUpdates` (`src/realtime-feed.ts`), cached as a raw protobuf
+> payload in the Cloudflare Cache API (`s-maxage=15`), and merged into query
+> results in JS by `trip_id` (`buildRealtimeMap`/`mergeDeparturesRealtime`/
+> `mergeTripStopsRealtime` in `src/db-queries.ts`). The schema and update
+> algorithm below are retained for historical context only.
 
 ```sql
 CREATE TABLE IF NOT EXISTS trip_updates (
@@ -777,7 +792,11 @@ Given:
   INTEGER `stop_times.departure_time`)
 - `:today` = unix seconds at **noon** in the agency's timezone (matches how
   calendar dates are stored)
-- `:realtime_cutoff` = unix seconds, `now - REALTIME_STALENESS_SECONDS`
+
+> **Historical:** the `trip_updates` join shown below was dropped in migration 0016. The live `buildDeparturesQuery` is now a pure static-schedule read, and
+> realtime `delay`/`status` are merged into the result rows in JS from the
+> on-demand GTFS-RT fetch (`src/realtime-feed.ts`). The query is kept here for
+> reference.
 
 **Step 1: Find active feed_version_id**
 
@@ -898,7 +917,8 @@ WHERE s.feed_version_id = :feed_version_id
 
 `vehicle_positions` was dropped in migration 0014 (never populated, never
 read), so there is no vehicles-on-a-route query. Realtime coverage is
-trip-level delay/status via `trip_updates` only.
+trip-level delay/status via the on-demand GTFS-RT fetch
+(`src/realtime-feed.ts`) only.
 
 ---
 
@@ -906,11 +926,10 @@ trip-level delay/status via `trip_updates` only.
 
 ### 7.1 Realtime data retention
 
-`trip_updates` is keyed on `(feed_source_id, trip_id)` and upserted in
-place, so it stays at one row per known trip. The daily import workflow
-additionally purges rows whose `updated_time` is older than 24h
-(`TRIP_UPDATES_RETENTION_SECONDS`), and the read path ignores anything older
-than 15 minutes (`REALTIME_STALENESS_SECONDS`) regardless.
+Realtime data is no longer stored in D1 (the `trip_updates` table was dropped
+in migration 0016), so there is nothing to retain or purge. Freshness is bounded
+instead by the Cloudflare Cache API TTL on the fetched GTFS-RT payload
+(`RT_CACHE_TTL_SECONDS`, ~15s, in `src/realtime-feed.ts`).
 
 ### 7.2 Deleting old feed versions (implemented)
 
@@ -922,7 +941,6 @@ than 15 minutes (`REALTIME_STALENESS_SECONDS`) regardless.
    (7 days by default).
 2. For each, execute the FK-safe ordered statement list from
    `buildVersionCleanupStatements()`:
-   - detach realtime rows (`UPDATE trip_updates SET trip_pk = NULL ...`),
    - delete `stop_times`, `trips`, `stops`, `shapes` in **batches of 5000
      via primary-key subqueries** (these tables hold millions of rows and a
      single unbounded `DELETE` would exceed D1's per-query limits — the same

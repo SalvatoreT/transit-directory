@@ -1,6 +1,6 @@
-// Pure SQL builders for deleting old, inactive feed versions and stale
-// realtime rows. Kept free of "cloudflare:workers" imports so the ordering
-// logic is unit-testable with vitest.
+// Pure SQL builders for deleting old, inactive feed versions. Kept free of
+// "cloudflare:workers" imports so the ordering logic is unit-testable with
+// vitest.
 //
 // Inactive feed versions were previously only flagged (is_active = 0) and
 // never deleted, so every feed change permanently grew D1 storage by a full
@@ -10,11 +10,6 @@
 // How long a deactivated version is kept for manual rollback before its data
 // is deleted. Tunable.
 export const VERSION_RETENTION_SECONDS = 7 * 24 * 3600;
-
-// trip_updates rows older than this are purged by the daily import; the read
-// path already ignores anything older than REALTIME_STALENESS_SECONDS.
-// Tunable.
-export const TRIP_UPDATES_RETENTION_SECONDS = 24 * 3600;
 
 // Rows deleted per batched statement. Keeps each query comfortably under
 // D1's per-query execution limits (see migration 0014's note about dropping
@@ -50,14 +45,6 @@ function deleteBatchedByPk(table: string, pkColumn: string): CleanupStatement {
 // always removed or detached before the rows they point at.
 export function buildVersionCleanupStatements(): CleanupStatement[] {
   return [
-    // Realtime rows outlive feed versions; detach them from this version's
-    // trips before the trips go away.
-    {
-      table: "trip_updates",
-      sql: "UPDATE trip_updates SET trip_pk = NULL WHERE trip_pk IN (SELECT trip_pk FROM trips WHERE feed_version_id = ?1)",
-      batched: false,
-    },
-
     // References trips + stops; by far the largest table, so batched.
     {
       table: "stop_times",
@@ -134,8 +121,4 @@ export function buildVersionCleanupStatements(): CleanupStatement[] {
 // clock instead.
 export function buildCondemnedVersionsQuery(): string {
   return `SELECT feed_version_id FROM feed_version WHERE feed_source_id = ?1 AND is_active = 0 AND COALESCE(deactivated_at, date_added) < unixepoch() - ${VERSION_RETENTION_SECONDS}`;
-}
-
-export function buildTripUpdatesPurgeQuery(): string {
-  return `DELETE FROM trip_updates WHERE updated_time < unixepoch() - ${TRIP_UPDATES_RETENTION_SECONDS}`;
 }
