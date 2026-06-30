@@ -66,7 +66,6 @@ export default async function RoutePage({
     endSeconds,
     todayNoon,
     todayColumn,
-    nowEpochSeconds: Math.floor(now.toSeconds()),
     limit: 1000,
   });
 

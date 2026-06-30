@@ -1,11 +1,5 @@
 import { transit_realtime } from "./gtfs-realtime";
 
-export interface RealtimeWorkflowEnv {
-  gtfs_data: D1Database;
-  API_KEY_511: string;
-  IMPORT_REALTIME_WORKFLOW: Workflow;
-}
-
 export interface FeedResponse {
   // null when the request was rate limited (HTTP 429).
   message: transit_realtime.IFeedMessage | null;
@@ -104,60 +98,4 @@ export function extractTripUpdateState(
   }
 
   return { tripId, delay: effectiveDelay, status };
-}
-
-export interface PacingInput {
-  nowMs: number;
-  cutoffMs: number;
-  rateLimitRemaining: number | null;
-  // Fastest allowed cadence; also the fallback when no rate limit headers
-  // are present.
-  minSleepSeconds?: number;
-  // Requests deliberately left unspent so other consumers of the API key
-  // (and clock skew) never push us into a 429.
-  reserveRequests?: number;
-}
-
-export interface PacingDecision {
-  continueLoop: boolean;
-  sleepSeconds: number;
-}
-
-// Spreads the remaining request budget evenly across the time left in this
-// workflow's window, so realtime coverage spans the whole hour instead of
-// burning the budget early and going dark. With an ample budget this floors
-// at minSleepSeconds (the historical fixed cadence).
-export function computePacing(input: PacingInput): PacingDecision {
-  const {
-    nowMs,
-    cutoffMs,
-    rateLimitRemaining,
-    minSleepSeconds = 15,
-    reserveRequests = 1,
-  } = input;
-
-  const secondsToCutoff = Math.floor((cutoffMs - nowMs) / 1000);
-  if (secondsToCutoff <= 0) {
-    return { continueLoop: false, sleepSeconds: 0 };
-  }
-
-  let sleepSeconds = minSleepSeconds;
-  if (rateLimitRemaining !== null) {
-    const budget = rateLimitRemaining - reserveRequests;
-    if (budget <= 0) {
-      return { continueLoop: false, sleepSeconds: 0 };
-    }
-    sleepSeconds = Math.max(
-      minSleepSeconds,
-      Math.floor(secondsToCutoff / budget),
-    );
-  }
-
-  // Sleeping past the cutoff would overlap the next hourly instance; end
-  // this one instead.
-  if (sleepSeconds >= secondsToCutoff) {
-    return { continueLoop: false, sleepSeconds: 0 };
-  }
-
-  return { continueLoop: true, sleepSeconds };
 }

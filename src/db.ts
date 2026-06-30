@@ -9,10 +9,12 @@ import {
   buildDeparturesQuery,
   buildTripStopsQuery,
   columnList,
+  mergeDeparturesRealtime,
+  mergeTripStopsRealtime,
   type DeparturesFilter,
 } from "./db-queries";
+import { getRealtimeTripUpdates } from "./realtime-feed";
 
-export { REALTIME_STALENESS_SECONDS } from "./db-queries";
 export type { DeparturesFilter } from "./db-queries";
 
 // Types
@@ -300,14 +302,17 @@ export const getTrip = cache(
 
 export async function getTripStops(
   tripPk: number,
-  nowEpochSeconds: number,
+  tripId: string,
 ): Promise<TripStopData[]> {
-  const { sql, params } = buildTripStopsQuery(tripPk, nowEpochSeconds);
-  const result = await getDb()
-    .prepare(sql)
-    .bind(...params)
-    .all<TripStopData>();
-  return result.results;
+  const { sql, params } = buildTripStopsQuery(tripPk);
+  const [result, rt] = await Promise.all([
+    getDb()
+      .prepare(sql)
+      .bind(...params)
+      .all<Omit<TripStopData, "delay">>(),
+    getRealtimeTripUpdates("RG"),
+  ]);
+  return mergeTripStopsRealtime(result.results, tripId, rt);
 }
 
 export async function getDepartures(
@@ -318,9 +323,12 @@ export async function getDepartures(
   }
 
   const { sql, params } = buildDeparturesQuery(filter);
-  const result = await getDb()
-    .prepare(sql)
-    .bind(...params)
-    .all<DeparturesData>();
-  return result.results;
+  const [result, rt] = await Promise.all([
+    getDb()
+      .prepare(sql)
+      .bind(...params)
+      .all<Omit<DeparturesData, "delay" | "realtime_status">>(),
+    getRealtimeTripUpdates("RG"),
+  ]);
+  return mergeDeparturesRealtime(result.results, rt);
 }

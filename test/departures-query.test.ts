@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  REALTIME_STALENESS_SECONDS,
   TRIP_STOPS_LIMIT,
   buildDeparturesQuery,
   buildTripStopsQuery,
@@ -12,15 +11,13 @@ const baseFilter = {
   endSeconds: 43200,
   todayNoon: 1750000000,
   todayColumn: "monday",
-  nowEpochSeconds: 1750001234,
 };
 
 describe("buildDeparturesQuery", () => {
-  it("filters realtime rows by staleness, bound before all filter params", () => {
+  it("reads only static schedule data, with the feed version bound first", () => {
     const { sql, params } = buildDeparturesQuery(baseFilter);
-    expect(sql).toContain("tu.updated_time >= ?");
-    expect(params[0]).toBe(1750001234 - REALTIME_STALENESS_SECONDS);
-    expect(params[1]).toBe(7);
+    expect(sql).not.toContain("trip_updates");
+    expect(params[0]).toBe(7);
   });
 
   it("binds exactly one param per placeholder for every filter shape", () => {
@@ -46,16 +43,7 @@ describe("buildDeparturesQuery", () => {
     expect(sql).toContain("s.stop_pk IN (?,?)");
     expect(sql).toContain("r.route_pk = ?");
     expect(params).toEqual([
-      1750001234 - REALTIME_STALENESS_SECONDS,
-      7,
-      11,
-      22,
-      33,
-      36000,
-      43200,
-      1750000000,
-      1750000000,
-      1750000000,
+      7, 11, 22, 33, 36000, 43200, 1750000000, 1750000000, 1750000000,
       1750000000,
     ]);
   });
@@ -78,10 +66,10 @@ describe("buildDeparturesQuery", () => {
 });
 
 describe("buildTripStopsQuery", () => {
-  it("filters realtime rows by staleness and caps the row count", () => {
-    const { sql, params } = buildTripStopsQuery(42, 1750001234);
-    expect(sql).toContain("tu.updated_time >= ?");
-    expect(params).toEqual([1750001234 - REALTIME_STALENESS_SECONDS, 42]);
+  it("reads only static schedule data and caps the row count", () => {
+    const { sql, params } = buildTripStopsQuery(42);
+    expect(sql).not.toContain("trip_updates");
+    expect(params).toEqual([42]);
     expect(sql).toContain(`LIMIT ${TRIP_STOPS_LIMIT}`);
   });
 });

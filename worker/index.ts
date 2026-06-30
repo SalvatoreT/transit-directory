@@ -1,6 +1,5 @@
 import handler from "vinext/server/app-router-entry";
 import { Import511Workflow } from "../src/Import511Workflow";
-import { Import511RealtimeWorkflow } from "../src/Import511RealtimeWorkflow";
 import {
   buildCacheKey,
   cacheRuleFor,
@@ -30,20 +29,6 @@ function makeWorkflowInstanceId(prefix: string): string {
 }
 
 const pad = (n: number) => n.toString().padStart(2, "0");
-
-async function triggerRealtimeWorkflow(env: Env) {
-  const now = new Date();
-  const yyyymmdd = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
-  const hhmmss = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-
-  await env.IMPORT_REALTIME_WORKFLOW.create({
-    id: makeWorkflowInstanceId(`${yyyymmdd}-${hhmmss}-511-RG-`),
-    params: {
-      agencyId: "RG",
-    },
-  });
-  console.log("Triggered regional realtime workflow (agency=RG).");
-}
 
 async function triggerStaticFeedUpdates(env: Env) {
   const result = await env.gtfs_data
@@ -116,10 +101,8 @@ export default {
 
     if (event.cron === "0 8 * * *") {
       ctx.waitUntil(triggerStaticFeedUpdates(env));
-    } else {
-      ctx.waitUntil(triggerRealtimeWorkflow(env));
     }
   },
 } satisfies ExportedHandler<Env>;
 
-export { Import511Workflow, Import511RealtimeWorkflow };
+export { Import511Workflow };

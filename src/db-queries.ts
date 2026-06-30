@@ -1,12 +1,11 @@
-// Pure SQL builders and constants shared by src/db.ts.
+// Pure SQL builders, realtime-merge helpers, and constants shared by
+// src/db.ts.
 //
 // This module must not import "cloudflare:workers" (directly or transitively)
 // so it stays loadable in vitest for unit tests.
 
-// How old a trip_updates row may be and still render as live data. Realtime
-// polls land every ~15-65s; 15 minutes covers rate-limit gaps without
-// resurrecting yesterday's delays.
-export const REALTIME_STALENESS_SECONDS = 900;
+import { extractTripUpdateState } from "./realtime-utils";
+import type { transit_realtime } from "./gtfs-realtime";
 
 // Hard caps so a single page view cannot scan unbounded result sets. The
 // queries are ordered, so caps only ever drop the furthest-out rows, which
@@ -98,15 +97,64 @@ export interface DeparturesFilter {
   endSeconds: number;
   todayNoon: number;
   todayColumn: string;
-  // Unix seconds; realtime rows older than nowEpochSeconds -
-  // REALTIME_STALENESS_SECONDS are ignored rather than shown as live.
-  nowEpochSeconds: number;
   limit?: number;
 }
 
 export interface SqlQuery {
   sql: string;
   params: unknown[];
+}
+
+// Per-trip realtime state, keyed by static (prefix-stripped) trip_id. Built
+// from the on-demand GTFS-RT feed and merged into query results in JS, so the
+// SQL stays a pure static-schedule read.
+export interface RealtimeEntry {
+  delay: number;
+  status: string;
+}
+
+// Reduces a decoded GTFS-Realtime feed to a trip_id -> {delay, status} map.
+// Keys are prefix-stripped to match static GTFS trip ids (see
+// extractTripUpdateState). Later entities win on duplicate trip ids.
+export function buildRealtimeMap(
+  entities: transit_realtime.IFeedEntity[],
+): Map<string, RealtimeEntry> {
+  const map = new Map<string, RealtimeEntry>();
+  for (const entity of entities) {
+    const state = extractTripUpdateState(entity);
+    if (state) {
+      map.set(state.tripId, { delay: state.delay, status: state.status });
+    }
+  }
+  return map;
+}
+
+// Attaches realtime delay/status to departure rows by trip_id. Rows without a
+// matching realtime entry keep null fields (rendered as scheduled).
+export function mergeDeparturesRealtime<T extends { trip_id: string }>(
+  rows: T[],
+  rt: Map<string, RealtimeEntry>,
+): (T & { delay: number | null; realtime_status: string | null })[] {
+  return rows.map((row) => {
+    const hit = rt.get(row.trip_id);
+    return {
+      ...row,
+      delay: hit ? hit.delay : null,
+      realtime_status: hit ? hit.status : null,
+    };
+  });
+}
+
+// A trip page renders one trip, so every stop row shares that trip's single
+// realtime delay (matching the old trip_pk-only join).
+export function mergeTripStopsRealtime<T>(
+  rows: T[],
+  tripId: string,
+  rt: Map<string, RealtimeEntry>,
+): (T & { delay: number | null })[] {
+  const hit = rt.get(tripId);
+  const delay = hit ? hit.delay : null;
+  return rows.map((row) => ({ ...row, delay }));
 }
 
 export function buildDeparturesQuery(filter: DeparturesFilter): SqlQuery {
@@ -118,7 +166,6 @@ export function buildDeparturesQuery(filter: DeparturesFilter): SqlQuery {
     endSeconds,
     todayNoon,
     todayColumn,
-    nowEpochSeconds,
     limit,
   } = filter;
 
@@ -127,12 +174,7 @@ export function buildDeparturesQuery(filter: DeparturesFilter): SqlQuery {
   }
 
   const conditions: string[] = ["s.feed_version_id = ?"];
-  // The trip_updates join condition binds first (it appears before WHERE in
-  // the statement text).
-  const params: unknown[] = [
-    nowEpochSeconds - REALTIME_STALENESS_SECONDS,
-    feed_version_id,
-  ];
+  const params: unknown[] = [feed_version_id];
 
   if (stopPks && stopPks.length > 0) {
     const placeholders = stopPks.map(() => "?").join(",");
@@ -148,10 +190,8 @@ export function buildDeparturesQuery(filter: DeparturesFilter): SqlQuery {
   params.push(currentSeconds, endSeconds);
   params.push(todayNoon, todayNoon, todayNoon, todayNoon);
 
-  // trip_pk is a globally unique surrogate key, so the realtime join can
-  // only match the exact trips row each update was written for; rows still
-  // pointing at deactivated feed versions never join. Only freshness needs
-  // filtering here.
+  // Realtime delay/status are merged in JS afterward (see
+  // mergeDeparturesRealtime); this query is a pure static-schedule read.
   let sql = `
     SELECT
         s.stop_pk,
@@ -164,15 +204,11 @@ export function buildDeparturesQuery(filter: DeparturesFilter): SqlQuery {
         r.route_text_color,
         t.trip_headsign,
         st.departure_time,
-        st.stop_sequence,
-        tu.delay,
-        tu.status as realtime_status
+        st.stop_sequence
     FROM stop_times st
     JOIN stops s ON st.stop_pk = s.stop_pk
     JOIN trips t ON st.trip_pk = t.trip_pk
     JOIN routes r ON t.route_pk = r.route_pk
-    LEFT JOIN trip_updates tu ON tu.trip_pk = t.trip_pk
-      AND tu.updated_time >= ?
     WHERE ${conditions.join(" AND ")}
       AND st.departure_time >= ?
       AND st.departure_time <= ?
@@ -211,10 +247,8 @@ export function buildDeparturesQuery(filter: DeparturesFilter): SqlQuery {
   return { sql, params };
 }
 
-export function buildTripStopsQuery(
-  tripPk: number,
-  nowEpochSeconds: number,
-): SqlQuery {
+export function buildTripStopsQuery(tripPk: number): SqlQuery {
+  // Realtime delay is merged in JS afterward (see mergeTripStopsRealtime).
   const sql = `
     SELECT
         ${columnList(STOP_COLUMNS, "s")},
@@ -223,18 +257,15 @@ export function buildTripStopsQuery(
         st.stop_sequence,
         st.timepoint,
         st.pickup_type,
-        st.drop_off_type,
-        tu.delay
+        st.drop_off_type
     FROM stops s
     JOIN stop_times st ON s.stop_pk = st.stop_pk
-    LEFT JOIN trip_updates tu ON tu.trip_pk = st.trip_pk
-      AND tu.updated_time >= ?
     WHERE st.trip_pk = ?
     ORDER BY st.stop_sequence ASC
     LIMIT ${TRIP_STOPS_LIMIT}
   `;
   return {
     sql,
-    params: [nowEpochSeconds - REALTIME_STALENESS_SECONDS, tripPk],
+    params: [tripPk],
   };
 }

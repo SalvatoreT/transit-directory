@@ -75,7 +75,6 @@ export default async function StopPage({
       endSeconds,
       todayNoon,
       todayColumn,
-      nowEpochSeconds: Math.floor(now.toSeconds()),
       limit: 300,
     });
   }
