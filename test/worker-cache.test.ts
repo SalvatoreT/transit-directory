@@ -3,10 +3,10 @@ import {
   BROWSER_TTL_SECONDS,
   PAGE_TTL_SECONDS,
   STATIC_TTL_SECONDS,
-  buildCacheKey,
   cacheRuleFor,
   shouldBypassCache,
   withCacheHeaders,
+  withPrivateHeaders,
 } from "../worker/cache";
 
 describe("cacheRuleFor", () => {
@@ -79,18 +79,6 @@ describe("shouldBypassCache", () => {
   });
 });
 
-describe("buildCacheKey", () => {
-  it("keys on the full URL including the query string", () => {
-    const key = buildCacheKey(
-      new Request("https://transit.directory/a/BA/t/1?stop=4", {
-        headers: { "x-extra": "ignored" },
-      }),
-    );
-    expect(key.url).toBe("https://transit.directory/a/BA/t/1?stop=4");
-    expect(key.method).toBe("GET");
-  });
-});
-
 describe("withCacheHeaders", () => {
   it("sets shared and browser cache lifetimes", () => {
     const result = withCacheHeaders(new Response("ok"), 60);
@@ -99,10 +87,44 @@ describe("withCacheHeaders", () => {
     );
   });
 
+  it("varies on RSC negotiation headers so flight payloads never collide", () => {
+    const result = withCacheHeaders(new Response("ok"), 60);
+    const vary = (result.headers.get("vary") || "").toLowerCase();
+    expect(vary).toContain("rsc");
+    expect(vary).toContain("next-router-state-tree");
+    expect(vary).toContain("next-router-prefetch");
+  });
+
+  it("keeps a Vary the framework already set", () => {
+    const result = withCacheHeaders(
+      new Response("ok", { headers: { Vary: "Accept-Encoding" } }),
+      60,
+    );
+    const vary = (result.headers.get("vary") || "").toLowerCase();
+    expect(vary).toContain("accept-encoding");
+    expect(vary).toContain("rsc");
+  });
+
   it("preserves the response body and status", async () => {
     const result = withCacheHeaders(
       new Response("body", { status: 200, headers: { "x-keep": "1" } }),
       30,
+    );
+    expect(result.status).toBe(200);
+    expect(result.headers.get("x-keep")).toBe("1");
+    expect(await result.text()).toBe("body");
+  });
+});
+
+describe("withPrivateHeaders", () => {
+  it("marks the response uncacheable in the shared cache", () => {
+    const result = withPrivateHeaders(new Response("ok"));
+    expect(result.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("preserves the response body and status", async () => {
+    const result = withPrivateHeaders(
+      new Response("body", { status: 200, headers: { "x-keep": "1" } }),
     );
     expect(result.status).toBe(200);
     expect(result.headers.get("x-keep")).toBe("1");
