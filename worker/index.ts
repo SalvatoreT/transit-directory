@@ -1,10 +1,10 @@
 import handler from "vinext/server/app-router-entry";
 import { Import511Workflow } from "../src/Import511Workflow";
 import {
-  buildCacheKey,
   cacheRuleFor,
   shouldBypassCache,
   withCacheHeaders,
+  withPrivateHeaders,
 } from "./cache";
 
 // vinext's exported type only declares fetch(request), but at runtime it is
@@ -70,30 +70,32 @@ async function triggerStaticFeedUpdates(env: Env) {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
-    const rule = cacheRuleFor(url.pathname);
-    if (!rule || shouldBypassCache(request)) {
-      return appFetch(request, env, ctx);
-    }
-
-    // Workers' CacheStorage has .default; lib.dom's typing shadows it here.
-    const cache = (caches as unknown as { default: Cache }).default;
-    const cacheKey = buildCacheKey(request);
-    const cached = await cache.match(cacheKey);
-    if (cached) {
-      const response = new Response(cached.body, cached);
-      response.headers.set("x-cache", "HIT");
-      return response;
-    }
-
     const response = await appFetch(request, env, ctx);
-    if (response.status !== 200) {
-      return response;
+
+    // Workers Caching (wrangler.jsonc `cache.enabled`) serves cached responses
+    // before this handler runs and, on a miss, stores whatever we return based
+    // on its Cache-Control. We only set those headers here.
+
+    // Requests that must never populate the shared cache: non-GET, cookies,
+    // authorization, or RSC negotiation. Mark private even if the framework
+    // set a cacheable header.
+    if (shouldBypassCache(request)) {
+      return withPrivateHeaders(response);
     }
 
-    const cacheable = withCacheHeaders(response, rule.ttlSeconds);
-    ctx.waitUntil(cache.put(cacheKey, cacheable.clone()));
-    cacheable.headers.set("x-cache", "MISS");
-    return cacheable;
+    // Allowlisted pages get a short shared TTL.
+    const rule = cacheRuleFor(url.pathname);
+    if (rule && response.status === 200) {
+      return withCacheHeaders(response, rule.ttlSeconds);
+    }
+
+    // /api/* is polled by TRMNL devices for fresh data; keep it uncached.
+    if (url.pathname.startsWith("/api/")) {
+      return withPrivateHeaders(response);
+    }
+
+    // Everything else (static assets, framework chunks) keeps its own headers.
+    return response;
   },
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
     const scheduledAt = new Date(event.scheduledTime).toISOString();
