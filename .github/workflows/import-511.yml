@@ -1,0 +1,55 @@
+name: Trigger 511 Import
+
+# Manual re-run of the static GTFS import that the daily cron normally
+# fires. Useful when a feed needs to be picked up before 08:00 UTC, or when
+# which version should be live has changed (see activateBestVersion in
+# src/Import511Workflow.ts) and the site should not wait a day to catch up.
+
+on:
+  workflow_dispatch:
+    inputs:
+      operator:
+        description: "511 operator id to import, or 'all' for every tracked source"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - AC
+          - BA
+          - CT
+          - SB
+          - SF
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    name: Trigger 511 Import
+    steps:
+      - uses: actions/checkout@v4
+      - run: corepack enable
+      - uses: actions/setup-node@v5
+        with:
+          # wrangler 4.x refuses to run on Node < 22.
+          node-version: 22
+          cache: "yarn"
+      - name: Install dependencies
+        run: yarn install --immutable
+      - name: Trigger import workflow
+        # OPERATOR goes through the environment rather than being
+        # interpolated into the script body.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          OPERATOR: ${{ inputs.operator }}
+        run: |
+          set -euo pipefail
+          if [ "$OPERATOR" = "all" ]; then
+            operators="AC BA CT SB SF"
+          else
+            operators="$OPERATOR"
+          fi
+          for op in $operators; do
+            echo "Triggering import-511-workflow for $op"
+            yarn wrangler workflows trigger import-511-workflow "{\"id\":\"$op\"}"
+          done

@@ -16,7 +16,9 @@ jobs:
       - run: corepack enable
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          # Must match deploy.yml: wrangler 4.x refuses to run on Node < 22,
+          # which made this job fail before it applied any SQL.
+          node-version: 22
           cache: "yarn"
       - name: Install dependencies
         run: yarn install --immutable
