@@ -60,11 +60,26 @@ Key deltas, by migration:
   active. Versions inactive for longer than the retention window (7 days;
   `VERSION_RETENTION_SECONDS` in `src/cleanup-queries.ts`) have all their
   data deleted by the daily import workflow in FK-safe batched passes.
+  Versions newer than the live one are spared, so a feed published ahead of
+  its service window is not deleted before it goes live.
+- **`feed_version.imported_at`** (0017): set when a version's import runs to
+  completion. Distinct from `is_active`, which now means "the version pages
+  currently serve". A version can be fully imported and not yet live.
 - **Import lifecycle**: `Import511Workflow` inserts new versions with
-  `is_active = 0`, imports everything, then atomically swaps activation in
-  a final step. A feed zip whose SHA-256 matches the active version skips
-  all staging and import work; a hash match on an inactive version means a
-  crashed import and triggers a full re-import into that version id.
+  `is_active = 0` and `imported_at` NULL, imports everything, stamps
+  `imported_at`, and then _selects_ which fully imported version to serve
+  rather than promoting the one it just imported. Selection (see
+  `src/activation-queries.ts`) takes the newest version that has service on
+  the current service date, falling back to the newest version overall when
+  none covers today. Promoting on download instead of on service coverage
+  caused a real outage: a BART feed downloaded 2026-08-07 declared its first
+  service day as 2026-08-10, and replacing the version that covered the days
+  in between left every train stop with no departures. A feed zip whose
+  SHA-256 matches an already fully imported version skips all staging and
+  import work and goes straight to selection plus cleanup, so a version
+  waiting on its service window is not re-imported daily; a hash match on a
+  version with `imported_at` NULL means a crashed import and triggers a full
+  re-import into that version id.
 
 ---
 
