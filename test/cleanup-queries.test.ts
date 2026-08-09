@@ -66,4 +66,15 @@ describe("retention queries", () => {
     // out via date_added instead of lingering forever.
     expect(sql).toContain("COALESCE(deactivated_at, date_added)");
   });
+
+  it("spares versions the live one has not superseded", () => {
+    // A feed published ahead of its service window waits imported-but-
+    // inactive, and is newer than the live version the whole time. Ageing it
+    // out on date_added alone would delete it days before it is due.
+    const sql = buildCondemnedVersionsQuery();
+    expect(sql).toContain(
+      "SELECT date_added FROM feed_version WHERE feed_source_id = ?1 AND is_active = 1",
+    );
+    expect(sql).toContain("date_added < COALESCE(");
+  });
 });

@@ -6,6 +6,12 @@ import {
 import JSZip from "jszip";
 import { DateTime } from "luxon";
 import {
+  type VersionServiceDay,
+  buildVersionServiceDayQuery,
+  chooseActiveVersion,
+  dayColumnFor,
+} from "./activation-queries";
+import {
   CLEANUP_BATCH_SIZE,
   buildCondemnedVersionsQuery,
   buildVersionCleanupStatements,
@@ -258,7 +264,7 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
     const instanceId = event.instanceId;
     const prefix = `imports/${instanceId}`;
 
-    const { hashHex, activeMatch } = await step.do(
+    const { hashHex, importedMatch } = await step.do(
       `[Import511] Download and stage ${operatorId}`,
       {
         retries: { limit: 5, delay: "30 seconds", backoff: "exponential" },
@@ -285,14 +291,17 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           .map((b) => b.toString(16).padStart(2, "0"))
           .join("");
 
-        // If this exact content is already imported and live, skip the
-        // unzip and R2 staging entirely; the run reduces to retention
-        // cleanup. A hash match on an INACTIVE version means a previous
-        // import crashed partway (or old content came back), so fall
-        // through and re-import it in full.
+        // If this exact content has already been imported in full, skip the
+        // unzip and R2 staging entirely; the run reduces to re-checking which
+        // version should be live and doing retention cleanup. That covers the
+        // version currently being served and a version still waiting for its
+        // service window to open, which would otherwise be re-imported from
+        // scratch every day until it goes live. A hash match on a version
+        // with no imported_at means a previous import crashed partway, so
+        // fall through and re-import it in full.
         const existing = await this.env.gtfs_data
           .prepare(
-            `SELECT fv.feed_version_id, fv.feed_source_id, fv.is_active
+            `SELECT fv.feed_version_id, fv.feed_source_id, fv.imported_at
              FROM feed_version fv
              JOIN feed_source fs ON fv.feed_source_id = fs.feed_source_id
              WHERE fs.source_name = ? AND fv.version_label = ?`,
@@ -301,14 +310,14 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           .first<{
             feed_version_id: number;
             feed_source_id: number;
-            is_active: number;
+            imported_at: number | null;
           }>();
 
-        if (existing && existing.is_active === 1) {
-          console.log("Feed unchanged, skipping unzip. hash:", hashHex);
+        if (existing && existing.imported_at !== null) {
+          console.log("Feed already imported, skipping unzip. hash:", hashHex);
           return {
             hashHex,
-            activeMatch: {
+            importedMatch: {
               feedVersionId: existing.feed_version_id,
               feedSourceId: existing.feed_source_id,
             },
@@ -329,15 +338,23 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           }
         }
         console.log("Finished unzip, hash:", hashHex);
-        return { hashHex, activeMatch: null };
+        return { hashHex, importedMatch: null };
       },
     );
 
-    if (activeMatch) {
+    if (importedMatch) {
+      // Nothing new to import, but which version should be live can still
+      // change without the feed changing: a version published ahead of its
+      // service window becomes servable the day that window opens.
+      await this.activateBestVersion(
+        step,
+        operatorId,
+        importedMatch.feedSourceId,
+      );
       await this.runRetentionCleanup(
         step,
         operatorId,
-        activeMatch.feedSourceId,
+        importedMatch.feedSourceId,
       );
       return;
     }
@@ -451,6 +468,14 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
 
         if (isNewVersion) {
           await this.env.gtfs_data.batch([
+            // Re-importing makes the version incomplete again until the
+            // "Mark import complete" step below, so it cannot be selected as
+            // the live version mid-import.
+            this.env.gtfs_data
+              .prepare(
+                "UPDATE feed_version SET imported_at = NULL WHERE feed_version_id = ?",
+              )
+              .bind(feedVersionId),
             // Delete static data
             this.env.gtfs_data
               .prepare(
@@ -558,10 +583,11 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
           ]);
         }
 
-        // The version stays inactive until every import step has
-        // succeeded; the activation step at the end swaps it in
-        // atomically. Pages keep serving the previous version until
-        // then, and a crashed import can never become the live version.
+        // The version stays incomplete (imported_at NULL) until every import
+        // step has succeeded, and inactive until the selection step at the
+        // end decides it is the right one to serve. Pages keep serving the
+        // previous version until then, and a crashed import can never become
+        // the live version.
         return {
           feedVersionId,
           feedSourceId,
@@ -2050,25 +2076,21 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
     }
 
     await step.do(
-      `[Import511] Activate feed version for ${operatorId}`,
+      `[Import511] Mark import complete for ${operatorId}`,
       async () => {
-        // Atomic swap: everything imported successfully, so this version
-        // becomes the one pages serve. COALESCE preserves the retention
-        // clock of versions that were already deactivated earlier.
-        await this.env.gtfs_data.batch([
-          this.env.gtfs_data
-            .prepare(
-              "UPDATE feed_version SET is_active = 0, deactivated_at = COALESCE(deactivated_at, unixepoch()) WHERE feed_source_id = ? AND feed_version_id != ?",
-            )
-            .bind(feedSourceId, feedVersionId),
-          this.env.gtfs_data
-            .prepare(
-              "UPDATE feed_version SET is_active = 1, deactivated_at = NULL WHERE feed_version_id = ?",
-            )
-            .bind(feedVersionId),
-        ]);
+        // Every import step succeeded, so this version is now whole and
+        // eligible to be served. Whether it is the one that gets served is
+        // the selection step's call.
+        await this.env.gtfs_data
+          .prepare(
+            "UPDATE feed_version SET imported_at = unixepoch() WHERE feed_version_id = ?",
+          )
+          .bind(feedVersionId)
+          .run();
       },
     );
+
+    await this.activateBestVersion(step, operatorId, feedSourceId);
 
     await this.runRetentionCleanup(step, operatorId, feedSourceId);
 
@@ -2081,6 +2103,90 @@ export class Import511Workflow extends WorkflowEntrypoint<Env, Params> {
         await this.env.gtfs_processing.delete(keys);
       }
     });
+  }
+
+  // Reads the agency timezone recorded by the most recent import of this
+  // source. Service dates are stored as noon in that zone (see parseGtfsDate),
+  // so selection has to ask "what day is it?" the same way.
+  private async resolveSourceTimezone(feedSourceId: number): Promise<string> {
+    const row = await this.env.gtfs_data
+      .prepare(
+        `SELECT a.agency_timezone
+         FROM agency a
+         JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id
+         WHERE fv.feed_source_id = ? AND a.agency_timezone IS NOT NULL
+         ORDER BY fv.date_added DESC
+         LIMIT 1`,
+      )
+      .bind(feedSourceId)
+      .first<{ agency_timezone: string }>();
+
+    return row?.agency_timezone ?? "UTC";
+  }
+
+  // Chooses which of this source's fully imported versions pages should
+  // serve. Deliberately not "the one just imported": a feed published before
+  // its service window opens has no service today, and promoting it drops the
+  // site to zero departures until that window arrives.
+  private async activateBestVersion(
+    step: WorkflowStep,
+    operatorId: string,
+    feedSourceId: number,
+  ) {
+    await step.do(
+      `[Import511] Select live version for ${operatorId}`,
+      async () => {
+        const timezone = await this.resolveSourceTimezone(feedSourceId);
+        let now = DateTime.now().setZone(timezone);
+        if (!now.isValid) now = DateTime.utc();
+
+        const todayNoon = Math.floor(
+          now.startOf("day").set({ hour: 12 }).toSeconds(),
+        );
+        const todayColumn = dayColumnFor(now.weekday);
+
+        const rows = await this.env.gtfs_data
+          .prepare(buildVersionServiceDayQuery(todayColumn))
+          .bind(feedSourceId, todayNoon)
+          .all<VersionServiceDay>();
+
+        const candidates = rows.results || [];
+        const chosen = chooseActiveVersion(candidates);
+
+        if (chosen === null) {
+          console.log(
+            `[Import511] No fully imported version for ${operatorId}; leaving the live version unchanged.`,
+          );
+          return;
+        }
+
+        const serving = candidates.some((c) => c.has_service_today === 1);
+        if (!serving) {
+          console.warn(
+            `[Import511] No version of ${operatorId} has service on ${now.toISODate()}; serving newest version ${chosen}.`,
+          );
+        }
+
+        // Atomic swap. COALESCE preserves the retention clock of versions
+        // that were already deactivated earlier.
+        await this.env.gtfs_data.batch([
+          this.env.gtfs_data
+            .prepare(
+              "UPDATE feed_version SET is_active = 0, deactivated_at = COALESCE(deactivated_at, unixepoch()) WHERE feed_source_id = ? AND feed_version_id != ?",
+            )
+            .bind(feedSourceId, chosen),
+          this.env.gtfs_data
+            .prepare(
+              "UPDATE feed_version SET is_active = 1, deactivated_at = NULL WHERE feed_version_id = ?",
+            )
+            .bind(chosen),
+        ]);
+
+        console.log(
+          `[Import511] ${operatorId} now serving feed version ${chosen} (${candidates.length} imported version(s) considered).`,
+        );
+      },
+    );
   }
 
   // Deletes data for versions that have been inactive longer than the

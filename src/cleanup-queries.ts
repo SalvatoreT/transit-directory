@@ -119,6 +119,20 @@ export function buildVersionCleanupStatements(): CleanupStatement[] {
 // COALESCE covers versions that never got a deactivated_at stamp (e.g. a
 // crashed import that was never activated): their date_added starts the
 // clock instead.
+//
+// The date_added guard only condemns versions the live one has superseded. A
+// feed published ahead of its service window sits imported-but-inactive until
+// that window opens, and is newer than the live version the whole time; ageing
+// it out would delete it days before it is due to be served and force a full
+// re-import. With no live version at all, nothing is newer, so the guard is
+// inert and every aged-out version is condemned as before.
 export function buildCondemnedVersionsQuery(): string {
-  return `SELECT feed_version_id FROM feed_version WHERE feed_source_id = ?1 AND is_active = 0 AND COALESCE(deactivated_at, date_added) < unixepoch() - ${VERSION_RETENTION_SECONDS}`;
+  return `SELECT feed_version_id FROM feed_version
+    WHERE feed_source_id = ?1
+      AND is_active = 0
+      AND COALESCE(deactivated_at, date_added) < unixepoch() - ${VERSION_RETENTION_SECONDS}
+      AND date_added < COALESCE(
+          (SELECT date_added FROM feed_version WHERE feed_source_id = ?1 AND is_active = 1),
+          unixepoch()
+      )`;
 }

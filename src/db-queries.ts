@@ -77,9 +77,9 @@ export function columnList(columns: readonly string[], alias?: string): string {
   return columns.map((c) => (alias ? `${alias}.${c}` : c)).join(", ");
 }
 
-// calendar weekday columns; todayColumn is interpolated into SQL, so it must
-// come from this list.
-const DAY_COLUMNS = [
+// calendar weekday columns, Sunday first; todayColumn is interpolated into
+// SQL, so it must come from this list.
+export const DAY_COLUMNS = [
   "sunday",
   "monday",
   "tuesday",
