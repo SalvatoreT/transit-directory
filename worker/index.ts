@@ -15,56 +15,35 @@ const appFetch = handler.fetch as unknown as (
   ctx: ExecutionContext,
 ) => Promise<Response>;
 
-// Workflow instance ids are padded to the maximum length so concurrent
-// triggers can never collide.
-function makeWorkflowInstanceId(prefix: string): string {
-  const maxLen = 64;
-  const remaining = Math.max(0, maxLen - prefix.length);
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let randomStr = "";
-  for (let i = 0; i < remaining; i++) {
-    randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return prefix + randomStr;
-}
+// Use stable IDs so a second delivery for the same UTC day and source is
+// skipped by createBatch. Manual imports can still create independent runs.
+async function triggerStaticFeedUpdates(env: Env, scheduledTime: number) {
+  const { results: sources } = await env.gtfs_data
+    .prepare("SELECT feed_source_id, source_name FROM feed_source")
+    .all<{ feed_source_id: number; source_name: string }>();
 
-const pad = (n: number) => n.toString().padStart(2, "0");
-
-async function triggerStaticFeedUpdates(env: Env) {
-  const result = await env.gtfs_data
-    .prepare("SELECT source_name FROM feed_source")
-    .all<{ source_name: string }>();
-
-  const agencies = result.results || [];
-
-  if (agencies.length === 0) {
-    console.log("[cron] No feed sources found, skipping static feed updates.");
-    return;
-  }
-
-  console.log(
-    `[cron] Triggering static feed updates for ${agencies.length} agencies.`,
-  );
-
-  const now = new Date();
-  const yyyymmdd = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
-
-  for (const agency of agencies) {
-    const operatorId = agency.source_name;
-
+  const day = new Date(scheduledTime).toISOString().slice(0, 10);
+  const batchSize = 100;
+  let created = 0;
+  const errors: unknown[] = [];
+  for (let i = 0; i < sources.length; i += batchSize) {
+    const batch = sources.slice(i, i + batchSize).map((source) => ({
+      id: `${day}-daily-511-${source.feed_source_id}`,
+      params: { id: source.source_name },
+    }));
     try {
-      await env.IMPORT_511_WORKFLOW.create({
-        id: makeWorkflowInstanceId(`${yyyymmdd}-daily-511-${operatorId}-`),
-        params: { id: operatorId },
-      });
-      console.log(`[cron] Triggered static feed update for ${operatorId}.`);
-    } catch (err) {
-      console.error(
-        `[cron] Failed to trigger static feed update for ${operatorId}:`,
-        err,
-      );
+      const instances = await env.IMPORT_511_WORKFLOW.createBatch(batch);
+      created += instances.length;
+    } catch (error) {
+      errors.push(error);
     }
   }
+  if (errors.length) {
+    throw new AggregateError(errors, "Daily 511 import dispatch failed");
+  }
+  console.log(
+    `[cron] Created ${created} imports for ${sources.length} sources.`,
+  );
 }
 
 export default {
@@ -83,7 +62,7 @@ export default {
       return withPrivateHeaders(response);
     }
 
-    // Allowlisted pages get a short shared TTL.
+    // Cache directory and live pages according to how their data changes.
     const rule = cacheRuleFor(url.pathname);
     if (rule && response.status === 200) {
       return withCacheHeaders(response, rule.ttlSeconds);
@@ -102,7 +81,7 @@ export default {
     console.log(`[cron] Triggered at ${scheduledAt}, cron: ${event.cron}`);
 
     if (event.cron === "0 8 * * *") {
-      ctx.waitUntil(triggerStaticFeedUpdates(env));
+      ctx.waitUntil(triggerStaticFeedUpdates(env, event.scheduledTime));
     }
   },
 } satisfies ExportedHandler<Env>;

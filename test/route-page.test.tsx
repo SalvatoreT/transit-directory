@@ -68,6 +68,7 @@ describe("51B route departures", () => {
   beforeEach(() => {
     vi.mocked(getAgency).mockResolvedValue({
       agency_name: "AC Transit",
+      source_name: "AC",
       agency_id: "AC",
       agency_pk: 1,
       agency_timezone: "America/Los_Angeles",

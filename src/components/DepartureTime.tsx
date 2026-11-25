@@ -1,9 +1,11 @@
-import { DateTime } from "luxon";
+import type { ServiceDay } from "../service-day";
 import styles from "./DepartureTime.module.css";
 
 interface DepartureTimeProps {
-  departureTime: number;
-  delay: number | null | undefined;
+  serviceDay: ServiceDay;
+  departureTime: number | null;
+  delay: number | null;
+  status: string | null;
   timezone: string;
   agencyId: string;
   tripId: string;
@@ -11,34 +13,37 @@ interface DepartureTimeProps {
 }
 
 export default function DepartureTime({
+  serviceDay,
   departureTime,
   delay,
+  status,
   timezone,
   agencyId,
   tripId,
   stopSequence,
 }: DepartureTimeProps) {
   const href = `/a/${agencyId}/t/${tripId}?stop=${stopSequence}`;
-
-  const stopMidnight = DateTime.now().setZone(timezone).startOf("day");
-  const depTime = stopMidnight.plus({ seconds: departureTime });
-
-  const isNextDay = depTime.day !== stopMidnight.day;
-  const timeDisplay = depTime.toFormat("h:mm a") + (isNextDay ? " (+1)" : "");
-
+  let timeLabel;
   let statusClass = styles.scheduled;
-  let timeLabel = timeDisplay;
 
-  if (delay != null) {
-    const delayMin = Math.round(delay / 60);
-    if (delayMin > 0) {
-      timeLabel += ` (+${delayMin})`;
-      statusClass = styles.delayed;
-    } else if (delayMin < 0) {
-      timeLabel += ` (${delayMin})`;
-      statusClass = styles.early;
-    } else {
-      statusClass = styles.onTime;
+  if (status === "CANCELED" || status === "SKIPPED") {
+    timeLabel = status === "CANCELED" ? "Canceled" : "Stop skipped";
+    statusClass = styles.delayed;
+  } else if (departureTime == null) {
+    timeLabel = "Time unavailable";
+  } else {
+    timeLabel = serviceDay.formatTime(departureTime + (delay ?? 0), timezone);
+    if (delay != null) {
+      const delayMin = Math.round(delay / 60);
+      if (delayMin > 0) {
+        timeLabel += ` (+${delayMin})`;
+        statusClass = styles.delayed;
+      } else if (delayMin < 0) {
+        timeLabel += ` (${delayMin})`;
+        statusClass = styles.early;
+      } else {
+        statusClass = styles.onTime;
+      }
     }
   }
 

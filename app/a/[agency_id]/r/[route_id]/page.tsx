@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { DateTime } from "luxon";
+import { getServiceDay } from "../../../../../src/service-day";
 import {
   getAgency,
   getRoute,
@@ -41,50 +42,47 @@ export default async function RoutePage({
   const route = await getRoute(route_id, feed_version_id);
   if (!route) notFound();
 
-  const routeStops = await getRouteStops(route.route_pk);
-
-  const now = DateTime.now().setZone(agency_timezone);
-  const midnight = now.startOf("day");
-  const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
+  const serviceDay = getServiceDay(DateTime.now().setZone(agency_timezone));
+  const { todayNoon, todayColumn, currentSeconds } = serviceDay;
   const endSeconds = currentSeconds + 4 * 60 * 60;
-  const todayNoon = midnight.set({ hour: 12 }).toSeconds()!;
-  const days = [
-    "sunday",
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-  ];
-  const todayColumn = days[now.weekday % 7];
 
-  const departures = await getDepartures({
-    feed_version_id,
-    route_pk: route.route_pk,
-    currentSeconds,
-    endSeconds,
-    todayNoon,
-    todayColumn,
-    limit: 1000,
-  });
+  const [routeStops, departures] = await Promise.all([
+    getRouteStops(route.route_pk),
+    getDepartures(
+      {
+        feed_version_id,
+        route_pk: route.route_pk,
+        currentSeconds,
+        endSeconds,
+        todayNoon,
+        todayColumn,
+        limit: 1000,
+      },
+      agency.source_name,
+    ),
+  ]);
 
-  const directionIds = [
-    ...new Set(routeStops.map((s) => s.direction_id)),
-  ].sort();
-
-  const stopsByDirection = directionIds.map((dirId) => {
-    const stops = routeStops.filter((s) => s.direction_id === dirId);
+  const stopsByDirection = Map.groupBy(routeStops, (stop) => stop.direction_id);
+  const departuresByDirection = Map.groupBy(
+    departures,
+    (dep) => dep.direction_id,
+  );
+  const directions = [...stopsByDirection.keys()].sort().map((directionId) => {
+    const stops = stopsByDirection.get(directionId)!;
+    const departuresByStop = Map.groupBy(
+      departuresByDirection.get(directionId) ?? [],
+      (dep) => dep.stop_id,
+    );
     return {
-      direction_id: dirId,
+      direction_id: directionId,
       headsign:
-        stops[0]?.trip_headsign ||
-        (dirId == null ? "Unknown direction" : `Direction ${dirId}`),
+        stops[0].trip_headsign ||
+        (directionId == null
+          ? "Unknown direction"
+          : `Direction ${directionId}`),
       stops: stops.map((stop) => ({
         ...stop,
-        departures: departures.filter(
-          (d) => d.stop_id === stop.stop_id && d.direction_id === dirId,
-        ),
+        departures: departuresByStop.get(stop.stop_id) ?? [],
       })),
     };
   });
@@ -133,7 +131,7 @@ export default async function RoutePage({
       </div>
 
       <div>
-        {stopsByDirection.map((direction) => (
+        {directions.map((direction) => (
           <section
             key={direction.direction_id ?? "unknown"}
             className={styles.directionSection}
@@ -158,6 +156,8 @@ export default async function RoutePage({
                         .map((dep, i) => (
                           <DepartureTime
                             key={i}
+                            serviceDay={serviceDay}
+                            status={dep.realtime_status}
                             departureTime={dep.departure_time}
                             delay={dep.delay}
                             timezone={stop.stop_timezone || agency_timezone}
@@ -176,7 +176,7 @@ export default async function RoutePage({
           </section>
         ))}
 
-        {stopsByDirection.length === 0 && <p>No stops found for this route.</p>}
+        {directions.length === 0 && <p>No stops found for this route.</p>}
       </div>
     </main>
   );
