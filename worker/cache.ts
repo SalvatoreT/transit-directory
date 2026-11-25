@@ -7,11 +7,8 @@
 // Cache API by hand we express intent through headers here.
 // See https://developers.cloudflare.com/workers/cache/.
 //
-// Pages render realtime delays, but the realtime data itself only updates
-// every ~15-60s, so a short shared cache shields D1 from page and bot traffic
-// at negligible freshness cost.
-
-// Tunable TTLs.
+// Stop, route, and trip pages display live predictions. The directories,
+// sitemap and robots only depend on static schedules or application code.
 export const PAGE_TTL_SECONDS = 60;
 export const STATIC_TTL_SECONDS = 3600;
 // Browsers revalidate quickly so a user refresh picks up new departures.
@@ -24,11 +21,17 @@ export interface CacheRule {
 // Allowlist; anything not matched here (notably all /api/* routes, which
 // TRMNL devices poll for fresh data) is served uncached.
 export function cacheRuleFor(pathname: string): CacheRule | null {
-  if (pathname === "/") return { ttlSeconds: PAGE_TTL_SECONDS };
-  if (pathname === "/sitemap.xml" || pathname === "/robots.txt") {
+  if (
+    pathname === "/" ||
+    pathname === "/sitemap.xml" ||
+    pathname === "/robots.txt" ||
+    /^\/a\/[^/]+\/?$/.test(pathname)
+  ) {
     return { ttlSeconds: STATIC_TTL_SECONDS };
   }
-  if (pathname.startsWith("/a/")) return { ttlSeconds: PAGE_TTL_SECONDS };
+  if (/^\/a\/[^/]+\/[rst]\/[^/]+\/?$/.test(pathname)) {
+    return { ttlSeconds: PAGE_TTL_SECONDS };
+  }
   return null;
 }
 
@@ -59,6 +62,7 @@ function appendVary(headers: Headers, fields: string[]): void {
     .map((f) => f.trim())
     .filter(Boolean);
   const seen = new Set(existing.map((f) => f.toLowerCase()));
+  if (seen.has("*")) return;
   for (const field of fields) {
     if (!seen.has(field.toLowerCase())) {
       existing.push(field);
@@ -75,12 +79,27 @@ export function withCacheHeaders(
   response: Response,
   ttlSeconds: number,
 ): Response {
+  // vinext negotiates Flight via either the .rsc suffix or Accept. Inspect
+  // the final representation so both forms honor the framework's no-store.
+  if (
+    response.headers.has("Set-Cookie") ||
+    response.headers.get("Content-Type")?.startsWith("text/x-component")
+  ) {
+    return withPrivateHeaders(response);
+  }
   const result = new Response(response.body, response);
   result.headers.set(
     "Cache-Control",
     `public, max-age=${BROWSER_TTL_SECONDS}, s-maxage=${ttlSeconds}`,
   );
-  appendVary(result.headers, RSC_NEGOTIATION_HEADERS);
+  // A hit is served before our request-side bypass can run. Match only the
+  // anonymous representation and account for vinext's Accept negotiation.
+  appendVary(result.headers, [
+    "Cookie",
+    "Authorization",
+    "Accept",
+    ...RSC_NEGOTIATION_HEADERS,
+  ]);
   return result;
 }
 

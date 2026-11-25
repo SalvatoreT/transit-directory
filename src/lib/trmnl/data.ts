@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { getServiceDay } from "../../service-day";
 import {
   getAgency,
   getStop,
@@ -37,15 +38,18 @@ const MAX_TRMNL_DEPARTURES = 30;
 
 function formatDeparture(
   dep: DeparturesData,
-  timezone: string,
+  serviceStart: DateTime,
 ): TrmnlDeparture {
-  const midnight = DateTime.now().setZone(timezone).startOf("day");
-  const depTime = midnight.plus({ seconds: dep.departure_time });
-  const timeStr = depTime.toFormat("HH:mm");
-
   let delayText = "Sched.";
-  if (dep.delay != null) {
-    const delayMin = Math.round(dep.delay / 60);
+  const canceled = dep.realtime_status === "CANCELED";
+  const skipped = dep.realtime_status === "SKIPPED";
+  const delay = canceled || skipped ? null : dep.delay;
+  if (canceled) {
+    delayText = "Canceled";
+  } else if (skipped) {
+    delayText = "Skipped";
+  } else if (delay != null) {
+    const delayMin = Math.round(delay / 60);
     if (delayMin > 0) {
       delayText = `+${delayMin} min late`;
     } else if (delayMin < 0) {
@@ -58,7 +62,9 @@ function formatDeparture(
   return {
     routeName: dep.route_short_name || dep.route_long_name || dep.route_id,
     headsign: dep.trip_headsign || "Unknown",
-    time: timeStr,
+    time: serviceStart
+      .plus({ seconds: dep.departure_time + (delay ?? 0) })
+      .toFormat("HH:mm"),
     delayText,
   };
 }
@@ -102,30 +108,22 @@ export async function getTrmnlData(
   const targetStops = childrenStops.length > 0 ? childrenStops : [parentStop];
   const stopPks = targetStops.map((s) => s.stop_pk);
 
-  const now = DateTime.now().setZone(agency_timezone);
-  const midnight = now.startOf("day");
-  const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
+  const { start, todayNoon, todayColumn, currentSeconds } = getServiceDay(
+    DateTime.now().setZone(agency_timezone),
+  );
   const endOfDaySeconds = 24 * 60 * 60;
-  const todayNoon = midnight.set({ hour: 12 }).toSeconds()!;
-  const days = [
-    "sunday",
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-  ];
-  const todayColumn = days[now.weekday % 7];
 
-  const departures = await getDepartures({
-    feed_version_id,
-    stopPks,
-    currentSeconds,
-    endSeconds: endOfDaySeconds,
-    todayNoon,
-    todayColumn,
-  });
+  const departures = await getDepartures(
+    {
+      feed_version_id,
+      stopPks,
+      currentSeconds,
+      endSeconds: endOfDaySeconds,
+      todayNoon,
+      todayColumn,
+    },
+    agency.source_name,
+  );
 
   return {
     stopName: displayName || parentStop.stop_name,
@@ -135,7 +133,7 @@ export async function getTrmnlData(
     // but no layout renders more than ~27 rows, so cap the payload.
     departures: departures
       .slice(0, MAX_TRMNL_DEPARTURES)
-      .map((d) => formatDeparture(d, agency_timezone)),
+      .map((d) => formatDeparture(d, start)),
     departureCount: departures.length,
     lastUpdated: new Date().toISOString(),
   };

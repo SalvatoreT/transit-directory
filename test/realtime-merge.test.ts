@@ -1,80 +1,188 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildRealtimeMap,
   mergeDeparturesRealtime,
   mergeTripStopsRealtime,
-  type RealtimeEntry,
 } from "../src/db-queries";
+import type { transit_realtime } from "../src/gtfs-realtime";
 
-describe("buildRealtimeMap", () => {
-  it("keys entries by the prefix-stripped trip id", () => {
-    const map = buildRealtimeMap([
-      { id: "1", tripUpdate: { trip: { tripId: "RG:123" }, delay: 60 } },
+const todayNoon = Date.UTC(2026, 3, 5, 19) / 1000;
+const start = todayNoon - 43200;
+const window = { todayNoon, currentSeconds: 3000, endSeconds: 5000 };
+
+function stop(seq: number, trip_id = "123") {
+  return {
+    trip_id,
+    stop_id: String(seq),
+    stop_sequence: seq,
+    arrival_time: 3500 + seq * 100,
+    departure_time: 3510 + seq * 100,
+  };
+}
+
+function build(
+  trip: transit_realtime.ITripDescriptor,
+  fields: Partial<transit_realtime.ITripUpdate> = {},
+) {
+  return { id: "e", tripUpdate: { trip, ...fields } };
+}
+
+describe("regional predictions", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("expires individual operator updates even while the regional snapshot is fresh", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(todayNoon * 1000);
+    const rt = buildRealtimeMap([
+      build({ tripId: "BA:old" }, { timestamp: todayNoon - 91, delay: 80 }),
+      build(
+        { tripId: "BA:expiring" },
+        { timestamp: todayNoon - 85, delay: 30 },
+      ),
+      build({ tripId: "BA:unknown-age" }, { delay: 60 }),
     ]);
-    expect(map.get("123")).toEqual({ delay: 60, status: "SCHEDULED" });
-    expect(map.has("RG:123")).toBe(false);
+    const rows = ["old", "expiring", "unknown-age"].map((id, i) =>
+      stop(i + 1, id),
+    );
+    const board = () =>
+      mergeDeparturesRealtime(rows, rt, "BA", window).map((r) => r.delay);
+    expect(rt.has("BA:old")).toBe(false);
+    expect(board()).toEqual([null, 30, 60]);
+    vi.setSystemTime((todayNoon + 5) * 1000);
+    expect(board()).toEqual([null, null, 60]);
   });
 
-  it("skips entities without a usable trip update", () => {
-    const map = buildRealtimeMap([
-      { id: "1" },
-      { id: "2", tripUpdate: { trip: {} } },
+  it("handles regional static stop ids and unordered prediction boundaries", () => {
+    const rows = [1, 2, 3, 4].map((seq) => ({
+      ...stop(seq),
+      stop_id: `BA:${seq}`,
+    }));
+    const rt = buildRealtimeMap([
+      build(
+        { tripId: "BA:123" },
+        {
+          stopTimeUpdate: [
+            { stopId: "BA:3", departure: { delay: 0 } },
+            { stopId: "BA:1", departure: { delay: 111 } },
+          ],
+        },
+      ),
     ]);
-    expect(map.size).toBe(0);
+    expect(
+      mergeTripStopsRealtime(rows, "BA:123", rt, "RG", todayNoon).map(
+        (r) => r.delay,
+      ),
+    ).toEqual([111, 111, 0, 0]);
   });
 
-  it("lets the last entity win on duplicate trip ids", () => {
-    const map = buildRealtimeMap([
-      { id: "1", tripUpdate: { trip: { tripId: "9" }, delay: 30 } },
-      { id: "2", tripUpdate: { trip: { tripId: "9" }, delay: 90 } },
+  it("matches the static feed operator and service date, including ids with embedded colons", () => {
+    const rt = buildRealtimeMap([
+      build({ tripId: "CT:X:1" }, { delay: 12 }),
+      build({ tripId: "BA:X:1", startDate: "20260405" }, { delay: 51 }),
+      build({ tripId: "BA:X:1", startDate: "20260406" }, { delay: 60 }),
+      build({ tripId: "X:1" }, { delay: 90 }),
     ]);
-    expect(map.get("9")?.delay).toBe(90);
-  });
-});
-
-describe("mergeDeparturesRealtime", () => {
-  const rt = new Map<string, RealtimeEntry>([
-    ["123", { delay: 120, status: "SCHEDULED" }],
-  ]);
-
-  it("attaches delay and status for matching trips, null otherwise", () => {
-    const rows = [
-      { trip_id: "123", departure_time: 100 },
-      { trip_id: "999", departure_time: 200 },
-    ];
-    const merged = mergeDeparturesRealtime(rows, rt);
-    expect(merged[0]).toMatchObject({
-      trip_id: "123",
-      delay: 120,
-      realtime_status: "SCHEDULED",
-    });
-    expect(merged[1]).toMatchObject({
-      trip_id: "999",
-      delay: null,
-      realtime_status: null,
-    });
-  });
-
-  it("does not mutate the input rows", () => {
-    const rows = [{ trip_id: "123" }];
-    mergeDeparturesRealtime(rows, rt);
+    const rows = [stop(1, "X:1")];
+    const board = (source: string) =>
+      mergeDeparturesRealtime(rows, rt, source, window)[0];
+    expect(board("BA").delay).toBe(51);
+    expect(board("CT").delay).toBe(12);
+    expect(board("AC").delay).toBeNull();
     expect(rows[0]).not.toHaveProperty("delay");
+    expect(
+      mergeTripStopsRealtime(rows, "BA:X:1", rt, "RG", todayNoon)[0].delay,
+    ).toBe(51);
   });
-});
 
-describe("mergeTripStopsRealtime", () => {
-  it("applies the trip's single delay to every stop row", () => {
-    const rt = new Map<string, RealtimeEntry>([
-      ["555", { delay: -30, status: "SCHEDULED" }],
+  it("uses the correct absolute arrival and departure at a stop, and propagates its departure delay forward", () => {
+    const rt = buildRealtimeMap([
+      build(
+        { tripId: "BA:123" },
+        {
+          delay: 0,
+          stopTimeUpdate: [
+            {
+              stopSequence: 2,
+              arrival: { time: start + stop(2).arrival_time + 45, delay: -30 },
+              departure: { time: start + stop(2).departure_time + 120 },
+            },
+            { stopSequence: 4, scheduleRelationship: 1 },
+            { stopSequence: 6, scheduleRelationship: 2 },
+            { stopId: "BA:8", departure: { delay: 0 } },
+          ],
+        },
+      ),
     ]);
-    const rows = [{ stop_sequence: 1 }, { stop_sequence: 2 }];
-    const merged = mergeTripStopsRealtime(rows, "555", rt);
-    expect(merged.map((r) => r.delay)).toEqual([-30, -30]);
+    const rows = Array.from({ length: 9 }, (_, i) => stop(i + 1));
+    const stops = mergeTripStopsRealtime(rows, "123", rt, "BA", todayNoon);
+    expect(stops.map((r) => r.delay)).toEqual([
+      0,
+      45,
+      120,
+      null,
+      120,
+      null,
+      null,
+      0,
+      0,
+    ]);
+    expect(stops[1].departure_delay).toBe(120);
+    expect(stops[3].realtime_status).toBe("SKIPPED");
+    const departures = mergeDeparturesRealtime(rows, rt, "BA", window);
+    expect(departures.find((r) => r.stop_sequence === 2)?.delay).toBe(120);
   });
 
-  it("uses null delay when the trip has no realtime entry", () => {
-    const rows = [{ stop_sequence: 1 }];
-    const merged = mergeTripStopsRealtime(rows, "555", new Map());
-    expect(merged[0].delay).toBeNull();
+  it("never applies a later stop's delay backward, or infers a delay from a partial board with an unlocatable update", () => {
+    const rt = buildRealtimeMap([
+      build(
+        { tripId: "BA:123" },
+        { stopTimeUpdate: [{ stopSequence: 4, departure: { delay: 130 } }] },
+      ),
+    ]);
+    const rows = [stop(3), stop(5)];
+    expect(
+      mergeDeparturesRealtime(rows, rt, "BA", window).map((r) => r.delay),
+    ).toEqual([null, 130]);
+
+    const partial = buildRealtimeMap([
+      build(
+        { tripId: "BA:123" },
+        {
+          delay: 20,
+          stopTimeUpdate: [
+            { stopId: "BA:some-other-stop", scheduleRelationship: 2 },
+            { stopId: "BA:5", departure: { delay: 45 } },
+          ],
+        },
+      ),
+    ]);
+    expect(
+      mergeDeparturesRealtime(rows, partial, "BA", window).map((r) => r.delay),
+    ).toEqual([null, 45]);
+  });
+
+  it("shows cancellations, excludes deleted or already departed trips, and orders other rows by ETA", () => {
+    const rt = buildRealtimeMap([
+      build({ tripId: "BA:gone", scheduleRelationship: 7 }),
+      build({ tripId: "BA:cancel", scheduleRelationship: 3 }, { delay: 80 }),
+      build({ tripId: "BA:early" }, { delay: -900 }),
+      build({ tripId: "BA:late" }, { delay: 300 }),
+    ]);
+    const rows = ["gone", "cancel", "early", "late", "scheduled"].map((id, i) =>
+      stop(i + 1, id),
+    );
+    const board = mergeDeparturesRealtime(rows, rt, "BA", window);
+    expect(board.map((r) => r.trip_id)).toEqual([
+      "cancel",
+      "scheduled",
+      "late",
+    ]);
+    expect(board[0]).toMatchObject({
+      delay: null,
+      realtime_status: "CANCELED",
+    });
+    expect(mergeTripStopsRealtime(rows, "gone", rt, "BA", todayNoon)).toEqual(
+      [],
+    );
   });
 });

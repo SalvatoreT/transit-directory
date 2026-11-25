@@ -3,7 +3,7 @@ import { cache } from "react";
 import {
   AGENCY_COLUMNS,
   ROUTE_COLUMNS,
-  ROUTE_STOPS_LIMIT,
+  ROUTE_STOPS_SQL,
   STOP_COLUMNS,
   TRIP_COLUMNS,
   buildDeparturesQuery,
@@ -71,6 +71,7 @@ export interface DeparturesData {
   route_color: string | null;
   route_text_color: string | null;
   trip_headsign: string | null;
+  arrival_time: number | null;
   departure_time: number;
   stop_sequence: number;
   delay: number | null;
@@ -106,6 +107,8 @@ export interface TripStopData extends StopsData {
   pickup_type: number | null;
   drop_off_type: number | null;
   delay: number | null;
+  departure_delay: number | null;
+  realtime_status: string | null;
 }
 
 export interface StopsFilter {
@@ -138,14 +141,32 @@ export const getAgencies = cache(async (): Promise<AgenciesData[]> => {
   return result.results;
 });
 
+export async function getSitemapRoutes() {
+  const result = await getDb()
+    .prepare(
+      `
+    SELECT a.agency_pk, a.agency_id, r.route_id
+    FROM agency a
+    JOIN feed_version fv ON fv.feed_version_id = a.feed_version_id
+    LEFT JOIN routes r ON r.agency_pk = a.agency_pk AND r.feed_version_id = a.feed_version_id
+    WHERE fv.is_active = 1
+    ORDER BY a.agency_pk, r.route_sort_order, r.route_short_name, r.route_pk
+  `,
+    )
+    .all<{ agency_pk: number; agency_id: string; route_id: string | null }>();
+  return result.results;
+}
+
+type AgencyWithSource = AgenciesData & { source_name: string };
+
 export const getAgency = cache(
-  async (agencyId: string): Promise<AgenciesData | null> => {
+  async (agencyId: string): Promise<AgencyWithSource | null> => {
     const result = await getDb()
       .prepare(
-        `SELECT ${columnList(AGENCY_COLUMNS, "a")} FROM agency a JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id WHERE a.agency_id = ? AND fv.is_active = 1`,
+        `SELECT ${columnList(AGENCY_COLUMNS, "a")}, fs.source_name FROM agency a JOIN feed_version fv ON a.feed_version_id = fv.feed_version_id JOIN feed_source fs ON fs.feed_source_id = fv.feed_source_id WHERE a.agency_id = ? AND fv.is_active = 1`,
       )
       .bind(agencyId)
-      .first<AgenciesData>();
+      .first<AgencyWithSource>();
     return result;
   },
 );
@@ -249,43 +270,31 @@ export const getRouteByPk = cache(
   },
 );
 
-export async function getRouteStops(routePk: number): Promise<RouteStopData[]> {
-  const query = `
-    WITH TripStops AS (
-        SELECT
-            t.trip_pk,
-            t.direction_id,
-            t.trip_headsign,
-            COUNT(st.stop_time_pk) as stop_count
-        FROM trips t
-        JOIN stop_times st ON t.trip_pk = st.trip_pk
-        WHERE t.route_pk = ?
-        GROUP BY t.trip_pk, t.direction_id, t.trip_headsign
-    ),
-    BestTrips AS (
-        SELECT direction_id, trip_pk, trip_headsign
-        FROM (
-            SELECT direction_id, trip_pk, trip_headsign,
-                   ROW_NUMBER() OVER (PARTITION BY direction_id ORDER BY stop_count DESC) as rn
-            FROM TripStops
-        ) WHERE rn = 1
-    )
-    SELECT
-        ${columnList(STOP_COLUMNS, "s")},
-        bt.direction_id,
-        bt.trip_headsign,
-        st.stop_sequence
-    FROM stops s
-    JOIN stop_times st ON s.stop_pk = st.stop_pk
-    JOIN BestTrips bt ON st.trip_pk = bt.trip_pk
-    ORDER BY bt.direction_id, st.stop_sequence
-    LIMIT ${ROUTE_STOPS_LIMIT}
-  `;
+// Route PKs are unique across imported schedules. Retain one completed
+// static result per isolate without keeping any request-owned D1 promises.
+let lastRouteStops:
+  | { routePk: number; stops: RouteStopData[]; expiresAt: number }
+  | undefined;
 
+export async function getRouteStops(routePk: number): Promise<RouteStopData[]> {
+  if (
+    lastRouteStops?.routePk === routePk &&
+    lastRouteStops.expiresAt > Date.now()
+  ) {
+    return lastRouteStops.stops;
+  }
   const result = await getDb()
-    .prepare(query)
+    .prepare(ROUTE_STOPS_SQL)
     .bind(routePk)
     .all<RouteStopData>();
+  if (result.results.length) {
+    // Bound staleness if a read replica was still catching up to a new import.
+    lastRouteStops = {
+      routePk,
+      stops: result.results,
+      expiresAt: Date.now() + 5 * 60_000,
+    };
+  }
   return result.results;
 }
 
@@ -304,20 +313,31 @@ export const getTrip = cache(
 export async function getTripStops(
   tripPk: number,
   tripId: string,
+  sourceName: string,
+  todayNoon: number,
 ): Promise<TripStopData[]> {
   const { sql, params } = buildTripStopsQuery(tripPk);
   const [result, rt] = await Promise.all([
     getDb()
       .prepare(sql)
       .bind(...params)
-      .all<Omit<TripStopData, "delay">>(),
+      .all<
+        Omit<TripStopData, "delay" | "departure_delay" | "realtime_status">
+      >(),
     getRealtimeTripUpdates("RG"),
   ]);
-  return mergeTripStopsRealtime(result.results, tripId, rt);
+  return mergeTripStopsRealtime(
+    result.results,
+    tripId,
+    rt,
+    sourceName,
+    todayNoon,
+  );
 }
 
 export async function getDepartures(
   filter: DeparturesFilter,
+  sourceName: string,
 ): Promise<DeparturesData[]> {
   if (!filter.feed_version_id) {
     return [];
@@ -331,5 +351,5 @@ export async function getDepartures(
       .all<Omit<DeparturesData, "delay" | "realtime_status">>(),
     getRealtimeTripUpdates("RG"),
   ]);
-  return mergeDeparturesRealtime(result.results, rt);
+  return mergeDeparturesRealtime(result.results, rt, sourceName, filter);
 }

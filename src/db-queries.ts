@@ -4,8 +4,12 @@
 // This module must not import "cloudflare:workers" (directly or transitively)
 // so it stays loadable in vitest for unit tests.
 
-import { extractTripUpdateState } from "./realtime-utils";
-import type { transit_realtime } from "./gtfs-realtime";
+export {
+  buildRealtimeMap,
+  mergeDeparturesRealtime,
+  mergeTripStopsRealtime,
+  type RealtimeEntry,
+} from "./realtime-utils";
 
 // Hard caps so a single page view cannot scan unbounded result sets. The
 // queries are ordered, so caps only ever drop the furthest-out rows, which
@@ -105,58 +109,6 @@ export interface SqlQuery {
   params: unknown[];
 }
 
-// Per-trip realtime state, keyed by static (prefix-stripped) trip_id. Built
-// from the on-demand GTFS-RT feed and merged into query results in JS, so the
-// SQL stays a pure static-schedule read.
-export interface RealtimeEntry {
-  delay: number;
-  status: string;
-}
-
-// Reduces a decoded GTFS-Realtime feed to a trip_id -> {delay, status} map.
-// Keys are prefix-stripped to match static GTFS trip ids (see
-// extractTripUpdateState). Later entities win on duplicate trip ids.
-export function buildRealtimeMap(
-  entities: transit_realtime.IFeedEntity[],
-): Map<string, RealtimeEntry> {
-  const map = new Map<string, RealtimeEntry>();
-  for (const entity of entities) {
-    const state = extractTripUpdateState(entity);
-    if (state) {
-      map.set(state.tripId, { delay: state.delay, status: state.status });
-    }
-  }
-  return map;
-}
-
-// Attaches realtime delay/status to departure rows by trip_id. Rows without a
-// matching realtime entry keep null fields (rendered as scheduled).
-export function mergeDeparturesRealtime<T extends { trip_id: string }>(
-  rows: T[],
-  rt: Map<string, RealtimeEntry>,
-): (T & { delay: number | null; realtime_status: string | null })[] {
-  return rows.map((row) => {
-    const hit = rt.get(row.trip_id);
-    return {
-      ...row,
-      delay: hit ? hit.delay : null,
-      realtime_status: hit ? hit.status : null,
-    };
-  });
-}
-
-// A trip page renders one trip, so every stop row shares that trip's single
-// realtime delay (matching the old trip_pk-only join).
-export function mergeTripStopsRealtime<T>(
-  rows: T[],
-  tripId: string,
-  rt: Map<string, RealtimeEntry>,
-): (T & { delay: number | null })[] {
-  const hit = rt.get(tripId);
-  const delay = hit ? hit.delay : null;
-  return rows.map((row) => ({ ...row, delay }));
-}
-
 export function buildDeparturesQuery(filter: DeparturesFilter): SqlQuery {
   const {
     feed_version_id,
@@ -204,6 +156,7 @@ export function buildDeparturesQuery(filter: DeparturesFilter): SqlQuery {
         r.route_color,
         r.route_text_color,
         t.trip_headsign,
+        st.arrival_time,
         st.departure_time,
         st.stop_sequence
     FROM stop_times st
@@ -270,3 +223,27 @@ export function buildTripStopsQuery(tripPk: number): SqlQuery {
     params: [tripPk],
   };
 }
+
+// SQLite's single built-in MAX selects the bare trip_pk from a row with that
+// maximum. Tied longest patterns can each represent the direction, as in the
+// previous window ranking. Look up the headsign on the selected trip itself.
+export const ROUTE_STOPS_SQL = `
+  WITH BestTrips AS (
+    SELECT t.trip_pk
+    FROM trips t
+    WHERE t.route_pk = ?
+    GROUP BY t.direction_id
+    HAVING MAX((SELECT COUNT(*) FROM stop_times st WHERE st.trip_pk = t.trip_pk)) > 0
+  )
+  SELECT
+      ${columnList(STOP_COLUMNS, "s")},
+      t.direction_id,
+      t.trip_headsign,
+      st.stop_sequence
+  FROM BestTrips bt
+  JOIN trips t ON t.trip_pk = bt.trip_pk
+  JOIN stop_times st ON st.trip_pk = t.trip_pk
+  JOIN stops s ON s.stop_pk = st.stop_pk
+  ORDER BY t.direction_id, st.stop_sequence
+  LIMIT ${ROUTE_STOPS_LIMIT}
+`;

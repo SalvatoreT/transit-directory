@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { DateTime } from "luxon";
+import { getServiceDay } from "../../../../../src/service-day";
 import {
   getAgency,
   getTrip,
@@ -49,22 +50,37 @@ export default async function TripPage({
   const trip = await getTrip(trip_id, feed_version_id);
   if (!trip) notFound();
 
-  const route = await getRouteByPk(trip.route_pk);
+  const serviceDay = getServiceDay(DateTime.now().setZone(agency_timezone));
+  const { currentSeconds } = serviceDay;
+
+  const [route, stops] = await Promise.all([
+    getRouteByPk(trip.route_pk),
+    getTripStops(
+      trip.trip_pk,
+      trip.trip_id,
+      agency.source_name,
+      serviceDay.todayNoon,
+    ),
+  ]);
   const routeColor = route?.route_color ? `#${route.route_color}` : "#eee";
   const routeTextColor = route?.route_text_color
     ? `#${route.route_text_color}`
     : "#000";
 
-  const now = DateTime.now().setZone(agency_timezone);
-  const midnight = now.startOf("day");
-  const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
-
-  const stops = await getTripStops(trip.trip_pk, trip.trip_id);
-
   const selectedStop =
     selectedStopSequence !== null
       ? stops.find((s) => s.stop_sequence === selectedStopSequence)
       : null;
+
+  const arrival =
+    selectedStop?.arrival_time == null
+      ? null
+      : selectedStop.arrival_time + (selectedStop.delay ?? 0);
+  const departure =
+    selectedStop?.departure_time == null
+      ? null
+      : selectedStop.departure_time + (selectedStop.departure_delay ?? 0);
+  const countdownSeconds = arrival ?? departure;
 
   return (
     <main className={styles.main}>
@@ -73,10 +89,22 @@ export default async function TripPage({
           routeColor={routeColor}
           routeTextColor={routeTextColor}
           stopName={selectedStop.stop_name}
-          arrivalSeconds={selectedStop.arrival_time}
-          departureSeconds={selectedStop.departure_time}
-          delay={selectedStop.delay || 0}
-          timezone={agency_timezone}
+          arrivalFormatted={
+            arrival == null
+              ? null
+              : serviceDay.formatTime(arrival, agency_timezone)
+          }
+          departureFormatted={
+            departure == null
+              ? null
+              : serviceDay.formatTime(departure, agency_timezone)
+          }
+          countdownTimestamp={
+            countdownSeconds == null
+              ? null
+              : serviceDay.start.toMillis() + countdownSeconds * 1000
+          }
+          status={selectedStop.realtime_status}
         />
       )}
 
@@ -119,9 +147,12 @@ export default async function TripPage({
       <div>
         <div className={styles.stopsList}>
           {stops.map((stop) => {
-            const time = stop.departure_time || stop.arrival_time || 0;
-            const delay = stop.delay || 0;
-            const isPast = time + delay < currentSeconds;
+            const time = stop.departure_time ?? stop.arrival_time;
+            const delay =
+              (stop.departure_time == null
+                ? stop.delay
+                : stop.departure_delay) ?? 0;
+            const isPast = time != null && time + delay < currentSeconds;
 
             return (
               <div
@@ -138,8 +169,14 @@ export default async function TripPage({
                 </div>
                 <div className={styles.stopTimes}>
                   <DepartureTime
-                    departureTime={stop.arrival_time || 0}
-                    delay={stop.delay}
+                    serviceDay={serviceDay}
+                    status={stop.realtime_status}
+                    departureTime={stop.arrival_time ?? stop.departure_time}
+                    delay={
+                      stop.arrival_time == null
+                        ? stop.departure_delay
+                        : stop.delay
+                    }
                     timezone={agency_timezone}
                     agencyId={agency_id}
                     tripId={trip_id}

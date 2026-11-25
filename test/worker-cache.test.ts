@@ -10,20 +10,26 @@ import {
 } from "../worker/cache";
 
 describe("cacheRuleFor", () => {
-  it("caches pages briefly and metadata routes for an hour", () => {
-    expect(cacheRuleFor("/")).toEqual({ ttlSeconds: PAGE_TTL_SECONDS });
-    expect(cacheRuleFor("/a/BA")).toEqual({ ttlSeconds: PAGE_TTL_SECONDS });
+  it("reuses static directories and metadata for an hour", () => {
+    expect(cacheRuleFor("/")).toEqual({ ttlSeconds: STATIC_TTL_SECONDS });
+    expect(cacheRuleFor("/a/BA")).toEqual({ ttlSeconds: STATIC_TTL_SECONDS });
+    expect(cacheRuleFor("/sitemap.xml")).toEqual({
+      ttlSeconds: STATIC_TTL_SECONDS,
+    });
+    expect(cacheRuleFor("/robots.txt")).toEqual({
+      ttlSeconds: STATIC_TTL_SECONDS,
+    });
+  });
+
+  it("limits live stop, route and trip pages to a minute", () => {
     expect(cacheRuleFor("/a/BA/s/STOP1")).toEqual({
       ttlSeconds: PAGE_TTL_SECONDS,
     });
     expect(cacheRuleFor("/a/BA/r/ROUTE1")).toEqual({
       ttlSeconds: PAGE_TTL_SECONDS,
     });
-    expect(cacheRuleFor("/sitemap.xml")).toEqual({
-      ttlSeconds: STATIC_TTL_SECONDS,
-    });
-    expect(cacheRuleFor("/robots.txt")).toEqual({
-      ttlSeconds: STATIC_TTL_SECONDS,
+    expect(cacheRuleFor("/a/BA/t/TRIP1")).toEqual({
+      ttlSeconds: PAGE_TTL_SECONDS,
     });
   });
 
@@ -36,6 +42,7 @@ describe("cacheRuleFor", () => {
   it("leaves unknown paths uncached", () => {
     expect(cacheRuleFor("/favicon.svg")).toBeNull();
     expect(cacheRuleFor("/admin")).toBeNull();
+    expect(cacheRuleFor("/a/BA/private")).toBeNull();
   });
 });
 
@@ -87,12 +94,30 @@ describe("withCacheHeaders", () => {
     );
   });
 
-  it("varies on RSC negotiation headers so flight payloads never collide", () => {
+  it("distinguishes anonymous HTML from personalized and router requests", () => {
     const result = withCacheHeaders(new Response("ok"), 60);
     const vary = (result.headers.get("vary") || "").toLowerCase();
     expect(vary).toContain("rsc");
     expect(vary).toContain("next-router-state-tree");
     expect(vary).toContain("next-router-prefetch");
+    expect(vary).toContain("accept");
+    expect(vary).toContain("cookie");
+    expect(vary).toContain("authorization");
+  });
+
+  it.each([
+    ["Content-Type", "text/x-component; charset=utf-8"],
+    ["Set-Cookie", "sid=1"],
+  ])("keeps responses with %s private", (name, value) => {
+    const response = new Response("body", { headers: { [name]: value } });
+    expect(withCacheHeaders(response, 60).headers.get("cache-control")).toBe(
+      "private, no-store",
+    );
+  });
+
+  it("retains a framework wildcard that opts out of shared reuse", () => {
+    const response = new Response("body", { headers: { Vary: "*" } });
+    expect(withCacheHeaders(response, 60).headers.get("vary")).toBe("*");
   });
 
   it("keeps a Vary the framework already set", () => {

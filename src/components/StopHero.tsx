@@ -1,22 +1,21 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { DateTime } from "luxon";
 import styles from "./StopHero.module.css";
 
 interface StopHeroProps {
   routeColor: string;
   routeTextColor: string;
   stopName: string;
-  arrivalSeconds: number | null;
-  departureSeconds: number | null;
-  delay: number;
-  timezone: string;
+  arrivalFormatted: string | null;
+  departureFormatted: string | null;
+  countdownTimestamp: number | null;
+  status: string | null;
 }
 
 function formatCountdown(diffMs: number): string {
-  if (diffMs <= 0) return "Arrived";
-  const totalSeconds = Math.floor(diffMs / 1000);
+  if (diffMs <= 0) return "Time passed";
+  const totalSeconds = Math.ceil(diffMs / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
@@ -28,50 +27,38 @@ export default function StopHero({
   routeColor,
   routeTextColor,
   stopName,
-  arrivalSeconds,
-  departureSeconds,
-  delay,
-  timezone,
+  arrivalFormatted,
+  departureFormatted,
+  countdownTimestamp,
+  status,
 }: StopHeroProps) {
-  const midnight = DateTime.now().setZone(timezone).startOf("day");
-
-  const arrivalTime =
-    arrivalSeconds != null
-      ? midnight.plus({ seconds: arrivalSeconds + delay })
-      : null;
-  const departureTime =
-    departureSeconds != null
-      ? midnight.plus({ seconds: departureSeconds + delay })
-      : null;
-
-  const arrivalFormatted = arrivalTime?.toFormat("h:mm a");
-  const departureFormatted = departureTime?.toFormat("h:mm a");
-  const sameTime =
-    arrivalFormatted &&
-    departureFormatted &&
-    arrivalFormatted === departureFormatted;
-
-  const countdownTime = arrivalTime || departureTime;
-  const countdownTimestamp = countdownTime?.toMillis() || 0;
-
+  const sameTime = arrivalFormatted && arrivalFormatted === departureFormatted;
+  const disruption =
+    status === "CANCELED"
+      ? "Trip canceled"
+      : status === "SKIPPED"
+        ? "Stop skipped"
+        : null;
   const [countdown, setCountdown] = useState("--:--:--");
-  const [arrived, setArrived] = useState(false);
 
   useEffect(() => {
-    function update() {
-      if (!countdownTimestamp) return;
-      const diff = countdownTimestamp - Date.now();
-      if (diff <= 0) {
-        setCountdown("Arrived");
-        setArrived(true);
-      } else {
-        setCountdown(formatCountdown(diff));
-      }
-    }
+    if (countdownTimestamp == null || disruption) return;
+    let timeout: ReturnType<typeof setTimeout>;
+    const update = () => {
+      clearTimeout(timeout);
+      if (document.hidden) return;
+      const remaining = countdownTimestamp - Date.now();
+      setCountdown(formatCountdown(remaining));
+      // Recheck at the exact second boundary, then stop at the predicted time.
+      if (remaining > 0) timeout = setTimeout(update, remaining % 1000 || 1000);
+    };
     update();
-    const interval = setInterval(update, 1000);
-    return () => clearInterval(interval);
-  }, [countdownTimestamp]);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      clearTimeout(timeout);
+      document.removeEventListener("visibilitychange", update);
+    };
+  }, [countdownTimestamp, disruption]);
 
   function handleClose() {
     const url = new URL(window.location.href);
@@ -97,20 +84,22 @@ export default function StopHero({
       </button>
       <div className={styles.heroStopName}>{stopName}</div>
       <div className={styles.heroTimes}>
-        {sameTime ? (
+        {disruption ? (
+          <span className={styles.heroTime}>{disruption}</span>
+        ) : sameTime ? (
           <div className={styles.heroTimeBlock}>
             <span className={styles.heroLabel}>Arrival/Departure</span>
             <span className={styles.heroTime}>{arrivalFormatted}</span>
           </div>
         ) : (
           <>
-            {arrivalTime && (
+            {arrivalFormatted && (
               <div className={styles.heroTimeBlock}>
                 <span className={styles.heroLabel}>Arrival</span>
                 <span className={styles.heroTime}>{arrivalFormatted}</span>
               </div>
             )}
-            {departureTime && (
+            {departureFormatted && (
               <div className={styles.heroTimeBlock}>
                 <span className={styles.heroLabel}>Departure</span>
                 <span className={styles.heroTime}>{departureFormatted}</span>
@@ -118,14 +107,19 @@ export default function StopHero({
             )}
           </>
         )}
-        <div className={styles.heroTimeBlock}>
-          <span className={styles.heroLabel}>Countdown</span>
-          <span
-            className={`${styles.heroTime} ${styles.countdownTime} ${arrived ? styles.arrived : ""}`}
-          >
-            {countdown}
-          </span>
-        </div>
+        {!disruption && countdownTimestamp != null && (
+          <div className={styles.heroTimeBlock}>
+            <span className={styles.heroLabel}>Countdown</span>
+            <span
+              className={`${styles.heroTime} ${styles.countdownTime} ${countdown === "Time passed" ? styles.arrived : ""}`}
+            >
+              {countdown}
+            </span>
+          </div>
+        )}
+        {!disruption && countdownTimestamp == null && (
+          <span>Time unavailable</span>
+        )}
       </div>
     </div>
   );

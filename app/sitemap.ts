@@ -1,11 +1,11 @@
 import type { MetadataRoute } from "next";
-import { getAgencies, getRoutes } from "../src/db";
+import { getSitemapRoutes } from "../src/db";
 
 export const dynamic = "force-dynamic";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const baseUrl = "https://transit.directory";
-  const agencies = await getAgencies();
+  const rows = await getSitemapRoutes();
 
   const entries: MetadataRoute.Sitemap = [
     {
@@ -15,21 +15,16 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     },
   ];
 
-  for (const agency of agencies) {
-    entries.push({
-      url: `${baseUrl}/a/${agency.agency_id}`,
-      changeFrequency: "daily",
-      priority: 0.8,
-    });
-
-    const routes = await getRoutes({
-      feed_version_id: agency.feed_version_id,
-      agency_pk: agency.agency_pk,
-    });
-
-    for (const route of routes) {
+  let lastAgencyPk: number | undefined;
+  for (const row of rows) {
+    const agencyUrl = `${baseUrl}/a/${row.agency_id}`;
+    if (row.agency_pk !== lastAgencyPk) {
+      entries.push({ url: agencyUrl, changeFrequency: "daily", priority: 0.8 });
+      lastAgencyPk = row.agency_pk;
+    }
+    if (row.route_id !== null) {
       entries.push({
-        url: `${baseUrl}/a/${agency.agency_id}/r/${route.route_id}`,
+        url: `${agencyUrl}/r/${row.route_id}`,
         changeFrequency: "weekly",
         priority: 0.6,
       });

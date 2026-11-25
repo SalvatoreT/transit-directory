@@ -8,13 +8,19 @@ A Next.js App Router app served by vinext on Cloudflare Workers:
   `migrations/`.
 - **R2** (binding `gtfs_processing`) stages unzipped GTFS files during imports.
 - **Workflow**: `Import511Workflow` runs daily (08:00 UTC cron) per feed source,
-  importing the static GTFS zip from 511.org and skipping all work when the zip
-  is unchanged.
-- **Realtime**: GTFS-RT TripUpdates (agency `RG`) are fetched on page load and
-  merged into departures; the raw payload is cached in the Cloudflare Cache API
-  (`src/realtime-feed.ts`) so 511.org is polled at most once per ~15s.
-- **Edge cache**: HTML pages and the sitemap are cached briefly at the edge
-  (`worker/cache.ts`); `/api/*` is never cached.
+  importing the static GTFS ZIP from 511.org. An unchanged ZIP skips staging
+  and import. The workflow still checks which version serves today's schedule
+  and cleans up expired versions.
+- **Realtime**: On a live page render, the Worker merges the regional 511
+  TripUpdates feed with the schedule by operator, trip, service date, and stop.
+  It reuses the raw feed for 15 seconds per Cloudflare data center and reuses its
+  decoded predictions in a warm Worker. Rate limits trigger a cooldown.
+  When predictions are unavailable or stale, riders see scheduled times.
+- **Edge cache**: The home page, agency directories, sitemap, and robots.txt
+  can stay at the edge for one hour. Route, stop, and trip pages can stay for
+  one minute. The selected stop's countdown runs in the browser. Refreshing
+  the page retrieves the latest available board. TRMNL API responses are private
+  and uncached.
 - **TRMNL plugin** endpoints live under `/api/trmnl/*` (see
   `docs/trmnl-setup.md`).
 

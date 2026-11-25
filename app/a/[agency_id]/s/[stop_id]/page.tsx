@@ -1,10 +1,12 @@
 import { notFound } from "next/navigation";
 import { DateTime } from "luxon";
+import { getServiceDay } from "../../../../../src/service-day";
 import {
   getAgency,
   getStop,
   getStops,
   getDepartures,
+  type DeparturesData,
 } from "../../../../../src/db";
 import DepartureTime from "../../../../../src/components/DepartureTime";
 import styles from "./page.module.css";
@@ -45,43 +47,35 @@ export default async function StopPage({
     parent_station_pk: parentStop.stop_pk,
   });
 
-  let targetStops = childrenStops.length > 0 ? childrenStops : [parentStop];
+  const targetStops = childrenStops.length > 0 ? childrenStops : [parentStop];
   targetStops.sort((a, b) => a.stop_name.localeCompare(b.stop_name));
 
   const stopPks = targetStops.map((s) => s.stop_pk);
 
-  const now = DateTime.now().setZone(agency_timezone);
-  const midnight = now.startOf("day");
-  const currentSeconds = Math.floor(now.diff(midnight, "seconds").seconds);
+  const serviceDay = getServiceDay(DateTime.now().setZone(agency_timezone));
+  const { todayNoon, todayColumn, currentSeconds } = serviceDay;
   const endSeconds = currentSeconds + 2 * 60 * 60;
-  const todayNoon = midnight.set({ hour: 12 }).toSeconds()!;
-  const days = [
-    "sunday",
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-  ];
-  const todayColumn = days[now.weekday % 7];
 
-  let departures: any[] = [];
+  let departures: DeparturesData[] = [];
   if (stopPks.length > 0) {
-    departures = await getDepartures({
-      feed_version_id,
-      stopPks,
-      currentSeconds,
-      endSeconds,
-      todayNoon,
-      todayColumn,
-      limit: 300,
-    });
+    departures = await getDepartures(
+      {
+        feed_version_id,
+        stopPks,
+        currentSeconds,
+        endSeconds,
+        todayNoon,
+        todayColumn,
+        limit: 300,
+      },
+      agency.source_name,
+    );
   }
 
+  const departuresByStop = Map.groupBy(departures, (dep) => dep.stop_pk);
   const stopsWithDepartures = targetStops.map((stop) => ({
     ...stop,
-    departures: departures.filter((d: any) => d.stop_pk === stop.stop_pk),
+    departures: departuresByStop.get(stop.stop_pk) ?? [],
   }));
 
   return (
@@ -103,7 +97,7 @@ export default async function StopPage({
             </h2>
             <div className={styles.departuresList}>
               {stop.departures.length > 0 ? (
-                stop.departures.map((dep: any, i: number) => {
+                stop.departures.map((dep, i) => {
                   const routeColor = dep.route_color
                     ? `#${dep.route_color}`
                     : "#eee";
@@ -135,6 +129,8 @@ export default async function StopPage({
                         {dep.trip_headsign}
                       </a>
                       <DepartureTime
+                        serviceDay={serviceDay}
+                        status={dep.realtime_status}
                         departureTime={dep.departure_time}
                         delay={dep.delay}
                         timezone={stop.stop_timezone || agency_timezone}
