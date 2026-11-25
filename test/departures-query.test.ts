@@ -20,6 +20,11 @@ describe("buildDeparturesQuery", () => {
     expect(params[0]).toBe(7);
   });
 
+  it("selects the trip direction for direction-specific route pages", () => {
+    const { sql } = buildDeparturesQuery({ ...baseFilter, route_pk: 9 });
+    expect(sql).toContain("t.direction_id,");
+  });
+
   it("binds exactly one param per placeholder for every filter shape", () => {
     const filters = [
       baseFilter,

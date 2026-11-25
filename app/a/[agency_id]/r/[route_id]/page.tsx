@@ -77,10 +77,14 @@ export default async function RoutePage({
     const stops = routeStops.filter((s) => s.direction_id === dirId);
     return {
       direction_id: dirId,
-      headsign: stops[0]?.trip_headsign || `Direction ${dirId}`,
+      headsign:
+        stops[0]?.trip_headsign ||
+        (dirId == null ? "Unknown direction" : `Direction ${dirId}`),
       stops: stops.map((stop) => ({
         ...stop,
-        departures: departures.filter((d) => d.stop_id === stop.stop_id),
+        departures: departures.filter(
+          (d) => d.stop_id === stop.stop_id && d.direction_id === dirId,
+        ),
       })),
     };
   });
@@ -131,7 +135,7 @@ export default async function RoutePage({
       <div>
         {stopsByDirection.map((direction) => (
           <section
-            key={direction.direction_id}
+            key={direction.direction_id ?? "unknown"}
             className={styles.directionSection}
           >
             <h2>To {direction.headsign}</h2>
