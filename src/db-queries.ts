@@ -198,6 +198,7 @@ export function buildDeparturesQuery(filter: DeparturesFilter): SqlQuery {
         s.stop_id,
         r.route_id,
         t.trip_id,
+        t.direction_id,
         r.route_short_name,
         r.route_long_name,
         r.route_color,

@@ -65,6 +65,7 @@ export interface DeparturesData {
   stop_id: string;
   route_id: string;
   trip_id: string;
+  direction_id: number | null;
   route_short_name: string | null;
   route_long_name: string | null;
   route_color: string | null;
@@ -92,7 +93,7 @@ export interface TripData {
 }
 
 export interface RouteStopData extends StopsData {
-  direction_id: number;
+  direction_id: number | null;
   stop_sequence: number;
   trip_headsign: string | null;
 }
