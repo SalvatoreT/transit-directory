@@ -1,10 +1,11 @@
 import { DateTime } from "luxon";
 import { getServiceDay } from "../../service-day";
+import type { RealtimeFeedStatus } from "../../realtime-feed";
 import {
   getAgency,
   getStop,
   getStops,
-  getDepartures,
+  getDeparturesWithRealtime,
   type DeparturesData,
 } from "../../db";
 
@@ -31,6 +32,17 @@ export interface TrmnlStopData {
   departureCount: number;
   lastUpdated: string;
 }
+
+type TrmnlBoard = TrmnlStopData & {
+  realtime: RealtimeFeedStatus & { updatedDepartures: number };
+};
+
+const noFeedRequested: TrmnlBoard["realtime"] = {
+  status: "not_requested",
+  sourceUpdatedAt: null,
+  httpStatus: null,
+  updatedDepartures: 0,
+};
 
 // Largest departure list any TRMNL layout can render (TRMNL X full layout
 // caps out below this).
@@ -73,7 +85,7 @@ export async function getTrmnlData(
   agencyId: string,
   stopId: string,
   displayName?: string,
-): Promise<TrmnlStopData> {
+): Promise<TrmnlBoard> {
   const agency = await getAgency(agencyId);
   if (!agency) {
     return {
@@ -82,6 +94,7 @@ export async function getTrmnlData(
       agencyName: agencyId,
       departures: [],
       departureCount: 0,
+      realtime: noFeedRequested,
       lastUpdated: new Date().toISOString(),
     };
   }
@@ -96,6 +109,7 @@ export async function getTrmnlData(
       agencyName: agency_name,
       departures: [],
       departureCount: 0,
+      realtime: noFeedRequested,
       lastUpdated: new Date().toISOString(),
     };
   }
@@ -113,7 +127,7 @@ export async function getTrmnlData(
   );
   const endOfDaySeconds = 24 * 60 * 60;
 
-  const departures = await getDepartures(
+  const { departures, realtime } = await getDeparturesWithRealtime(
     {
       feed_version_id,
       stopPks,
@@ -125,16 +139,20 @@ export async function getTrmnlData(
     agency.source_name,
   );
 
+  // The display shows the rest-of-day total; only the first rows need formatting.
+  let updatedDepartures = 0;
+  const visible = departures.slice(0, MAX_TRMNL_DEPARTURES).map((row) => {
+    const departure = formatDeparture(row, start);
+    if (departure.delayText !== "Sched.") updatedDepartures++;
+    return departure;
+  });
   return {
     stopName: displayName || parentStop.stop_name,
     stopId,
     agencyName: agency_name,
-    // departureCount keeps the full rest-of-day total (the display shows it),
-    // but no layout renders more than ~27 rows, so cap the payload.
-    departures: departures
-      .slice(0, MAX_TRMNL_DEPARTURES)
-      .map((d) => formatDeparture(d, start)),
+    departures: visible,
     departureCount: departures.length,
+    realtime: { ...realtime, updatedDepartures },
     lastUpdated: new Date().toISOString(),
   };
 }
