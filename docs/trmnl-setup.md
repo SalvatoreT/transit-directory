@@ -82,6 +82,15 @@ yarn deploy
 | `/api/trmnl/data`              | GET      | JSON debug endpoint. Params: `agency_id`, `stop_id`.                      |
 | `/api/trmnl/example`           | GET      | Example page with sample Caltrain data showing all layouts.               |
 
+The data endpoint includes the regional feed's `realtime.status` and its source
+timestamp (`sourceUpdatedAt`, when 511 supplies one). `updatedDepartures`
+counts returned rows with a prediction, cancellation, or skipped stop. A fresh
+feed can have zero updates for the requested stop. `upstream_error` includes
+511's `httpStatus` when available, such as 429 during a rate limit.
+`nextCheckAt`, when present, is the earliest the local cache will check 511
+again if someone requests a board. The board's `lastUpdated` records when
+the Worker generated the response.
+
 ## Layouts
 
 Each departure shows route name, departure time, and delay status on the title line, with the headsign (destination) as a label below. Full-width layouts (full, half horizontal) use a 2-column grid.

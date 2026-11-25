@@ -13,7 +13,11 @@ import {
   mergeTripStopsRealtime,
   type DeparturesFilter,
 } from "./db-queries";
-import { getRealtimeTripUpdates } from "./realtime-feed";
+import {
+  getRealtimeSnapshot,
+  getRealtimeTripUpdates,
+  type RealtimeFeedStatus,
+} from "./realtime-feed";
 
 export type { DeparturesFilter } from "./db-queries";
 
@@ -335,21 +339,44 @@ export async function getTripStops(
   );
 }
 
-export async function getDepartures(
+export async function getDeparturesWithRealtime(
   filter: DeparturesFilter,
   sourceName: string,
-): Promise<DeparturesData[]> {
+): Promise<{ departures: DeparturesData[]; realtime: RealtimeFeedStatus }> {
   if (!filter.feed_version_id) {
-    return [];
+    return {
+      departures: [],
+      realtime: {
+        status: "not_requested",
+        sourceUpdatedAt: null,
+        httpStatus: null,
+      },
+    };
   }
 
   const { sql, params } = buildDeparturesQuery(filter);
-  const [result, rt] = await Promise.all([
+  const [result, { updates, realtime }] = await Promise.all([
     getDb()
       .prepare(sql)
       .bind(...params)
       .all<Omit<DeparturesData, "delay" | "realtime_status">>(),
-    getRealtimeTripUpdates("RG"),
+    getRealtimeSnapshot("RG"),
   ]);
-  return mergeDeparturesRealtime(result.results, rt, sourceName, filter);
+  return {
+    departures: mergeDeparturesRealtime(
+      result.results,
+      updates,
+      sourceName,
+      filter,
+    ),
+    realtime,
+  };
+}
+
+export async function getDepartures(
+  filter: DeparturesFilter,
+  sourceName: string,
+): Promise<DeparturesData[]> {
+  const { departures } = await getDeparturesWithRealtime(filter, sourceName);
+  return departures;
 }

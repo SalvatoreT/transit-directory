@@ -15,7 +15,6 @@
  *   node bin/inspect-feed.mjs fc14fa0e-... RG servicealerts
  */
 
-import https from "node:https";
 import protobuf from "protobufjs";
 
 const [apiKey, agency, feedType = "tripupdates"] = process.argv.slice(2);
@@ -39,7 +38,7 @@ const FeedMessage = protobuf.Type.fromJSON("FeedMessage", {
     FeedHeader: {
       fields: {
         gtfsRealtimeVersion: { type: "string", id: 1 },
-        timestamp: { type: "uint64", id: 4 },
+        timestamp: { type: "uint64", id: 3 },
       },
     },
     FeedEntity: {
@@ -138,23 +137,18 @@ const FeedMessage = protobuf.Type.fromJSON("FeedMessage", {
   },
 });
 
-function fetch511(feedUrl) {
-  return new Promise((resolve, reject) => {
-    https.get(feedUrl, (res) => {
-      const headers = {
-        rateLimitLimit: res.headers["ratelimit-limit"],
-        rateLimitRemaining: res.headers["ratelimit-remaining"],
-      };
-      const chunks = [];
-      res.on("data", (c) => chunks.push(c));
-      res.on("end", () => resolve({ buf: Buffer.concat(chunks), headers }));
-      res.on("error", reject);
-    });
-  });
+const response = await fetch(url, {
+  headers: { Accept: "application/x-google-protobuf" },
+});
+if (!response.ok) {
+  throw new Error(`511 returned HTTP ${response.status}`);
 }
 
-const { buf, headers } = await fetch511(url);
-const msg = FeedMessage.decode(new Uint8Array(buf));
+const msg = FeedMessage.decode(new Uint8Array(await response.arrayBuffer()));
+const headers = {
+  rateLimitLimit: response.headers.get("ratelimit-limit"),
+  rateLimitRemaining: response.headers.get("ratelimit-remaining"),
+};
 
 console.log(`Feed: ${feedType} | Agency: ${agency}`);
 console.log(

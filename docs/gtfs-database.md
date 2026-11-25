@@ -32,9 +32,9 @@ Key deltas, by migration:
   `routes.cemv_support`, `trips.cars_allowed`, and `stop_times` Flex
   columns (`location_group_id`, `continuous_pickup`/`continuous_drop_off`,
   `start/end_pickup_drop_off_window`, booking rule ids, etc.).
-- **Index changes** (0005, 0007, 0008, 0009, 0012): the live lookup
-  indexes are `idx_calendar_dates_lookup`, `idx_trips_trip_id`,
-  `idx_routes_route_id`, `idx_stops_stop_id`,
+- **Index changes** (0005, 0007, 0008, 0009, 0012, 0018). Static trip,
+  route, and stop ID lookups use the unique indexes scoped to a feed version.
+  The main schedule lookup indexes are `idx_calendar_dates_lookup`,
   `idx_stops_parent_station (feed_version_id, parent_station)`,
   `idx_stop_times_departure (stop_pk, departure_time)`, and
   `idx_stop_times_trip_departure`. The originally recommended
@@ -639,10 +639,10 @@ Realtime tables are **logically separate** but tied to `feed_source` and static 
 > **Dropped in migration 0016.** Realtime delays are no longer persisted in
 > D1. The background polling workflow that maintained this table was removed;
 > GTFS-RT TripUpdates (agency `RG`) are now fetched on page load by
-> `getRealtimeTripUpdates` (`src/realtime-feed.ts`), cached as a raw protobuf
-> payload in the Cloudflare Cache API (`s-maxage=15`), and merged into query
-> results in JS by `trip_id` (`buildRealtimeMap`/`mergeDeparturesRealtime`/
-> `mergeTripStopsRealtime` in `src/db-queries.ts`). The schema and update
+> `getRealtimeSnapshot` (`src/realtime-feed.ts`). The Worker caches the raw
+> protobuf in the Cloudflare Cache API for an interval based on the upstream
+> quota and reuses decoded predictions in warm instances. The merge in `src/realtime-utils.ts` matches
+> the operator, trip, service date, and stop. The schema and update
 > algorithm below are retained for historical context only.
 
 ```sql

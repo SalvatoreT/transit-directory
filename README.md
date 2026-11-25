@@ -13,8 +13,11 @@ A Next.js App Router app served by vinext on Cloudflare Workers:
   and cleans up expired versions.
 - **Realtime**: On a live page render, the Worker merges the regional 511
   TripUpdates feed with the schedule by operator, trip, service date, and stop.
-  It reuses the raw feed for 15 seconds per Cloudflare data center and reuses its
-  decoded predictions in a warm Worker. Rate limits trigger a cooldown.
+  Each Cloudflare data center reuses the raw feed and warm Workers reuse the
+  decoded predictions. Requests are paced against 511's hourly allowance,
+  with a 15-second minimum interval. At the default 60 requests per hour,
+  the interval is 66 seconds. A 429 honors `Retry-After` or starts a five-minute
+  cooldown. Multiple data centers and the static imports share the same API key.
   When predictions are unavailable or stale, riders see scheduled times.
 - **Edge cache**: The home page, agency directories, sitemap, and robots.txt
   can stay at the edge for one hour. Route, stop, and trip pages can stay for

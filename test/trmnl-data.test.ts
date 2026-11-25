@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import {
   getAgency,
-  getDepartures,
+  getDeparturesWithRealtime,
   getStop,
   getStops,
   type DeparturesData,
@@ -10,7 +10,7 @@ import { getTrmnlData } from "../src/lib/trmnl/data";
 
 vi.mock("../src/db", () => ({
   getAgency: vi.fn(),
-  getDepartures: vi.fn(),
+  getDeparturesWithRealtime: vi.fn(),
   getStop: vi.fn(),
   getStops: vi.fn(),
 }));
@@ -38,20 +38,30 @@ it("uses the operator's predicted times and distinguishes disruptions from on-ti
     delay: null,
     route_id: "Local",
   } as DeparturesData;
-  vi.mocked(getDepartures).mockResolvedValue([
-    { ...scheduled, delay: -120 },
-    scheduled,
-    { ...scheduled, delay: 60, realtime_status: "CANCELED" },
-    { ...scheduled, realtime_status: "SKIPPED" },
-    { ...scheduled, delay: 300 },
-  ]);
+  const realtime = {
+    status: "available" as const,
+    httpStatus: 200,
+    sourceUpdatedAt: "2026-11-25T16:59:55.000Z",
+  };
+  vi.mocked(getDeparturesWithRealtime).mockResolvedValue({
+    realtime,
+    departures: [
+      { ...scheduled, delay: -120 },
+      scheduled,
+      { ...scheduled, delay: 60, realtime_status: "CANCELED" },
+      { ...scheduled, realtime_status: "SKIPPED" },
+      { ...scheduled, delay: 300 },
+    ],
+  });
 
   const data = await getTrmnlData("Caltrain", "station-id", "My station");
-  expect(getDepartures).toHaveBeenCalledWith(
+  expect(getDeparturesWithRealtime).toHaveBeenCalledTimes(1);
+  expect(getDeparturesWithRealtime).toHaveBeenCalledWith(
     expect.objectContaining({ stopPks: [7], currentSeconds: 32400 }),
     "CT",
   );
   expect([data.stopName, data.departureCount]).toEqual(["My station", 5]);
+  expect(data.realtime).toEqual({ ...realtime, updatedDepartures: 4 });
   expect(data.departures.map((d) => [d.time, d.delayText])).toEqual([
     ["09:58", "-2 min early"],
     ["10:00", "Sched."],
